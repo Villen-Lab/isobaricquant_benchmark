@@ -9,7 +9,7 @@ To recreate the analyses and figures generated in the scripts in this repository
 For support regarding the IsobaricQuant benchmark (i.e. the anlayses and figures in our publication), please list them directly in the issue tracker in this repository. For support regarding IsobaricQuant, please list them in the [IsobaricQuant repository](https://gitlab.com/public_villenlab/isobaricquant).
 
 ## Contributing
-For contributions, please contact [Judit Villén at the University of Washington](https://villenlab.gs.washington.edu/).
+For contributions, please contact [Ricard A. Rodríguez-Mias or Judit Villén at the University of Washington](https://villenlab.gs.washington.edu/).
 
 ## Authors and acknowledgment
 The code in this repository is [maintained by the Villen lab](https://villenlab.gs.washington.edu/) and built on the software IsobaricQuant.

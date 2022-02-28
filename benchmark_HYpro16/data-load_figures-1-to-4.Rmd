@@ -541,9 +541,8 @@ p_scores_scaled_RTS <- ggplot(QC_data[type=="ratio 1:20" & condition=="RTS-MS3"]
 ```{r fig_S4, fig.width=20, fig.height=20}
 
 #score distributions, raw and scaled
-plot_grid(p_scores_MS2, p_scores_scaled_MS2, p_scores_SPS, p_scores_scaled_SPS, p_scores_RTS, p_scores_scaled_RTS,
-                           labels = LETTERS[1:6], ncol = 2, rel_heights = c(3,4,4))
-ggsave2("figures/figS_scores_scaled.pdf", width = 20, height = 20)
+plot_grid(p_scores_SPS, p_scores_RTS, p_scores_MS2, labels = "AUTO", ncol = 2, rel_heights = c(4,3))
+ggsave2("figures/fig_S4.pdf", width = 20, height = 12.5)
 
 ```
 
@@ -589,8 +588,8 @@ QC_par_list <- list( list( "ms1PrecSIgnal", "= intensity precursor in MS1 window
                      list( "precTPIntRatio", "= intensity peaks in SPS windows", c("<0.8", "0.8<x<0.9", ">0.9"), c(0.8, 0.9) ),
                      list( "precTPNumRatio", "= number peaks in SPS windows", c("<0.3", "0.3<x<0.4", ">0.4"), c(0.3, 0.4) ) )
 
-QC_data_lm[, QC_par_ext := factor(QC_par, levels = sapply(QC_par_list, function(x) x[1] ),
-                                  labels = sapply(QC_par_list, function(x) paste0(x[1], "\n", x[2]) ))]
+QC_data_lm[, QC_par_ext := factor(QC_par, levels = sapply(QC_par_list, function(x) x[1] )[14:1],
+                                  labels = sapply(QC_par_list, function(x) paste0(x[1], "\n", x[2]) )[14:1])]
 QC_data_lm[, QC_par_des := factor(QC_par, levels = sapply(QC_par_list, function(x) x[1] ),
                                   labels = sapply(QC_par_list, function(x) gsub("= ", "", x[2], fixed = T) ))]
 
@@ -599,7 +598,7 @@ QC_data_lm <- QC_data_lm[!QC_par %in% c("topPeakIntensityTopXScore", "topPeakFro
 QC_data_lm[, condition := factor(condition, levels = cond_met_val, labels = c("MS2", "SPS-\nMS3", "RTS-\nMS3"))]
 
 p_point_slope <- ggplot(QC_data_lm[type=="ratio 1:20"], aes(x=condition, y=QC_par_ext, color=slope, size=R_squared)) +
-  geom_point() + geom_hline(yintercept = c(1.5, 9.5), linetype = "dashed") + xlab("") + ylab("") +
+  geom_point() + geom_hline(yintercept = c(2.5, 10.5), linetype = "dashed") + xlab("") + ylab("") +
   scale_color_viridis("slope", option = "E") + scale_size_continuous("R^2", range = c(0,10)) +
   theme_minimal_grid() + theme(legend.position = "bottom")
 p_point_slope_legend <- get_legend(p_point_slope)
@@ -621,45 +620,46 @@ data_COy_MS3 <- data_COy[ratio_any_valid==T & !is.na(peptideIntensityScore) & !i
 p_ratio_cor_peptideIntensityScore <- ggplot(data_COy_MS3, aes(x=peptideIntensityScore, y=ratio_20_m)) +
   stat_density_2d(geom = "polygon", aes(fill = after_stat(level))) +
   geom_hline(yintercept = 20, linetype = "dashed") + xlim(0,1) +
-  facet_grid(rows = vars(condition)) + scale_fill_viridis("density") + theme_minimal_grid() + ylab("median ratio 20:1")
+  facet_grid(rows = vars(condition)) + scale_fill_viridis("density") + theme_minimal_grid() + ylab("peptide mean ratio 20:1")
 
 
 data_COy_MS3 <- data_COy[ratio_any_valid==T & !is.na(peptideTopXIntensityFromTotalScore) & !is.na(ratio_20_m)]
 p_ratio_cor_peptideTopXIntensityFromTotalScore <- ggplot(data_COy_MS3, aes(x=peptideTopXIntensityFromTotalScore, y=ratio_20_m)) +
   stat_density_2d(geom = "polygon", aes(fill = after_stat(level))) +
   geom_hline(yintercept = 20, linetype = "dashed") + xlim(0,1) +
-  facet_grid(rows = vars(condition)) + scale_fill_viridis("density") + theme_minimal_grid() + ylab("median ratio 20:1")
+  facet_grid(rows = vars(condition)) + scale_fill_viridis("density") + theme_minimal_grid() + ylab("peptide mean ratio 20:1")
 
 
 data_COy_MS3 <- data_COy[ratio_any_valid==T & !is.na(msnTotalSignal_log10) & !is.na(ratio_20_m)]
 p_ratio_cor_msnTotalSignal_log10 <- ggplot(data_COy_MS3, aes(x=msnTotalSignal_log10, y=ratio_20_m)) +
   stat_density_2d(geom = "polygon", aes(fill = after_stat(level))) +
   geom_hline(yintercept = 20, linetype = "dashed") + xlab("log 10 msnTotalSignal") +
-  facet_grid(rows = vars(condition)) + scale_fill_viridis("density") + theme_minimal_grid() + ylab("median ratio 20:1")
+  facet_grid(rows = vars(condition)) + scale_fill_viridis("density") + theme_minimal_grid() + ylab("peptide mean ratio 20:1")
 
 
 data_COy_MS3 <- data_COy[ratio_any_valid==T & !is.na(ms1PrecSIgnal) & !is.na(ratio_20_m)]
 #label number of ms1PrecSIgnal==1
 data_COy_MS3[, ms1PrecSIgnal_eq1 := ms1PrecSIgnal==1]
-count_1 <- data_COy_MS3[, .N, keyby = c("condition", "ms1PrecSIgnal_eq1")][, .(ms1_1 = paste0("ms1PrecSignal =1\n(excluded)\n", round(N[2]/sum(N), 3)*100, "%")), keyby = c("condition")]
+count_1 <- data_COy_MS3[, .N, keyby = c("condition", "ms1PrecSIgnal_eq1")][, .(ms1_1 = paste0(round(N[2]/sum(N), 3)*100, "% excluded")),
+                                                                           keyby = c("condition")]
 p_ratio_cor_ms1PrecSIgnal <- ggplot(data_COy_MS3[ms1PrecSIgnal!=1], aes(x=ms1PrecSIgnal, y=ratio_20_m)) +
   stat_density_2d(geom = "polygon", aes(fill = after_stat(level))) + geom_hline(yintercept = 20, linetype = "dashed") +
   geom_text(data=count_1, aes(x=0, y=19, label=ms1_1), hjust=0, vjust=1) +
   xlab("ms1PrecSignal (excluding =1)") + xlim(0,1) + ylim(0,25) +
-  facet_grid(cols = vars(condition)) + scale_fill_viridis("density") + theme_minimal_grid() + ylab("median ratio 20:1")
+  facet_grid(cols = vars(condition)) + scale_fill_viridis("density") + theme_minimal_grid() + ylab("peptide mean ratio 20:1")
 
 
-count_1_shown <- data_COy_MS3[, .N, keyby = c("condition", "ms1PrecSIgnal_eq1")][, .(ms1_1 = paste0("ms1PrecSignal =1 (shown)\n", round(N[2]/sum(N), 3)*100, "%")), keyby = c("condition")]
+count_1_shown <- data_COy_MS3[, .N, keyby = c("condition", "ms1PrecSIgnal_eq1")][, .(ms1_1 = paste0(round(N[2]/sum(N), 3)*100, "% shown")), keyby = c("condition")]
 p_ratio_density_ms1PrecSIgnal_1 <- ggplot(data_COy_MS3[ms1PrecSIgnal==1], aes(x=ratio_20_m)) +
-  geom_density() + geom_vline(xintercept = 20, linetype = "dashed") + xlab("median ratio 20:1") +
-  geom_text(data=count_1_shown, aes(x=35, y=0.14, label=ms1_1), hjust=0.5, vjust=1) + ylab("density\n(only ms1PrecSIgnal =1)") +
+  geom_density() + geom_vline(xintercept = 20, linetype = "dashed") + xlab("peptide mean ratio 20:1\n(only showing ms1PrecSignal = 1)") +
+  geom_text(data=count_1_shown, aes(x=35, y=0.14, label=ms1_1), hjust=0.5, vjust=1) + ylab("density") +
   facet_grid(rows = vars(condition)) + theme_minimal_grid()
 
 ```
 
-## Peptide median ratio
+## Peptide mean ratio
 
-This code block generates yeast peptide median ratios plots (Fig 4d).
+This code block generates yeast peptide mean ratios plots (Fig 4d).
 
 ```{r}
 
@@ -667,7 +667,7 @@ This code block generates yeast peptide median ratios plots (Fig 4d).
 data_COy <- data_COw[organism=="YEAST"]
 
 
-# == peptide median ratio, separated by methods ==
+# == peptide mean ratio, separated by methods ==
 #peptideIntensityScore
 QC_pep_ratio <-
   rbind(data_COy[!is.na(ratio_20_m), .(ratio = ratio_20_m, type = c(">0")),
@@ -682,7 +682,7 @@ lab <- QC_pep_ratio[!is.na(ratio), .(N = .N, y = quantile(ratio, na.rm=T)["75%"]
 p_pep_ratio_peptideIntensityScore <- ggplot(QC_pep_ratio, aes(x=condition, y=ratio, fill=type)) +
   geom_boxplot(outlier.alpha = 0.2, color = "grey", lwd=0.5, fatten=1) +
   geom_text(data=lab, aes(x=condition, y=y+c(1.5, 3.5, 4), label=N), position = position_dodge(0.75), size = 3) +
-  scale_fill_viridis_d("peptideIntensityScore", option = "B") + xlab("") + ylab("peptide median ratio 20:1") +
+  scale_fill_viridis_d("peptideIntensityScore", option = "B") + xlab("") + ylab("peptide mean ratio 20:1") +
   theme_minimal_hgrid() + theme(legend.position = "top") + guides(fill = guide_legend(title.position="top"))
 
 
@@ -701,7 +701,7 @@ lab <- QC_pep_ratio[!is.na(ratio), .(N = .N, y = quantile(ratio, na.rm=T)["75%"]
 p_pep_ratio_peptideTopXIntensityFromTotalScore <- ggplot(QC_pep_ratio, aes(x=condition, y=ratio, fill=type)) +
   geom_boxplot(outlier.alpha = 0.2, color = "grey", lwd=0.5, fatten=1) +
   geom_text(data=lab, aes(x=condition, y=y+c(1.5, 3.5, 4), label=N), position = position_dodge(0.75), size = 3) +
-  scale_fill_viridis_d("peptideTopXIntensityFromTotalScore", option = "B") + xlab("") + ylab("peptide median ratio 20:1") +
+  scale_fill_viridis_d("peptideTopXIntensityFromTotalScore", option = "B") + xlab("") + ylab("peptide mean ratio 20:1") +
   theme_minimal_hgrid() + theme(legend.position = "top") + guides(fill = guide_legend(title.position="top"))
 
 
@@ -719,12 +719,12 @@ lab <- QC_pep_ratio[!is.na(ratio), .(N = .N, y = quantile(ratio, na.rm=T)["75%"]
 p_pep_ratio_msnTotalSignal_log10 <- ggplot(QC_pep_ratio, aes(x=condition, y=ratio, fill=type)) +
   geom_boxplot(outlier.alpha = 0.2, color = "grey", lwd=0.5, fatten=1) +
   geom_text(data=lab, aes(x=condition, y=y+c(1.5, 2.5, 3), label=N), position = position_dodge(0.75), size = 3) +
-  scale_fill_viridis_d("msnTotalSignal", option = "B") + xlab("") + ylab("peptide median ratio 20:1") +
+  scale_fill_viridis_d("msnTotalSignal", option = "B") + xlab("") + ylab("peptide mean ratio 20:1") +
   theme_minimal_hgrid() + theme(legend.position = "top") + guides(fill = guide_legend(title.position="top"))
 
 ```
 
-## Protein median ratio min 2 peptides
+## Protein CV and median ratio (min 2 peptides)
 
 This code block generates yeast protein median ratio plots, where filtering at all cutoffs retains at least 2 peptide observations per protein (Fig 4e and S6).
 
@@ -773,7 +773,7 @@ p_min2_CV_msnTotalSignal <- ggplot(prot_min2_msnT[], aes(x=condition, y=CV, fill
   geom_boxplot(outlier.alpha = 0.2, color = "grey", lwd=0.5, fatten=1) +
   geom_text(data=lab, aes(x=condition, y=y+c(0.3,0.2,0.15,0.1), label=N), position = position_dodge(0.75), size = 3) +
   xlab("") + ylab("protein CV 20:1") + scale_fill_manual("msnTotalSignal", values = c("#FFFFFFFF", viridis(3, option = "B"))) +
-  theme_minimal_hgrid() + theme_yaxis_percentage + theme(legend.position = "top") + guides(fill = guide_legend(title.position="top"))
+  theme_minimal_hgrid() + theme_yaxis_percentage + theme(legend.position = "bottom") + guides(fill = guide_legend(title.position="top"))
 
 
 
@@ -814,7 +814,7 @@ p_min2_CV_peptideTopXIntensityFromTotalScore <- ggplot(prot_min2_ptoX[], aes(x=c
   geom_text(data=lab, aes(x=condition, y=y+c(0.3,0.2,0.15,0.1), label=N), position = position_dodge(0.75), size = 3) +
   xlab("") + ylab("protein CV 20:1") +
   scale_fill_manual("peptideTopXIntensityFromTotalScore", values = c("#FFFFFFFF", viridis(3, option = "B"))) +
-  theme_minimal_hgrid() + theme_yaxis_percentage + theme(legend.position = "top") + guides(fill = guide_legend(title.position="top"))
+  theme_minimal_hgrid() + theme_yaxis_percentage + theme(legend.position = "bottom") + guides(fill = guide_legend(title.position="top"))
 
 
 
@@ -856,7 +856,7 @@ p_min2_CV_peptideIntensityScore <- ggplot(prot_min2_pepI[], aes(x=condition, y=C
   geom_boxplot(outlier.alpha = 0.2, color = "grey", lwd=0.5, fatten=1) +
   geom_text(data=lab, aes(x=condition, y=y+c(0.3,0.2,0.15,0.1), label=N), position = position_dodge(0.75), size = 3) +
   xlab("") + ylab("protein CV 20:1") + scale_fill_manual("peptideIntensityScore", values = c("#FFFFFFFF", viridis(3, option = "B"))) +
-  theme_minimal_hgrid() + theme_yaxis_percentage + theme(legend.position = "top") + guides(fill = guide_legend(title.position="top"))
+  theme_minimal_hgrid() + theme_yaxis_percentage + theme(legend.position = "bottom") + guides(fill = guide_legend(title.position="top"))
 
 
 
@@ -908,19 +908,32 @@ p_min2_CV_random_score <- ggplot(prot_min2_rndm[], aes(x=condition, y=CV, fill=t
 
 ### Figure 4
 
-```{r fig_4, fig.width=20, fig.height=10}
+```{r fig_4, fig.width=15, fig.height=15}
+
+# ##Fig 4: HYpro16 MS2/3 filter options (IQ vs FP / MQ) - wide version
+# p_fig4b <- plot_grid(p_ratio_cor_msnTotalSignal_log10, p_pep_ratio_msnTotalSignal_log10,
+#                      p_min2_CV_msnTotalSignal,
+#                      p_ratio_cor_peptideIntensityScore, p_pep_ratio_peptideIntensityScore,
+#                      p_min2_CV_peptideIntensityScore,
+#                      p_ratio_cor_peptideTopXIntensityFromTotalScore, p_pep_ratio_peptideTopXIntensityFromTotalScore,
+#                      p_min2_CV_peptideTopXIntensityFromTotalScore,
+#                      labels = LETTERS[3:5], ncol = 3, align = "v", axis = "lr")
+# p_fig4a <- plot_grid(p_point_slope + theme(legend.position = "none"), p_point_slope_legend, p_ratio_density_ms1PrecSIgnal_1, labels = c("A", "", "B"), rel_heights = c(1.9, 0.1, 1), ncol = 1)
+# plot_grid(p_fig4a, p_fig4b, rel_widths = c(1, 3))
+# ggsave2("figures/fig_4.pdf", width = 20, height = 10)
 
 ##Fig 4: HYpro16 MS2/3 filter options (IQ vs FP / MQ)
 p_fig4b <- plot_grid(p_ratio_cor_msnTotalSignal_log10, p_pep_ratio_msnTotalSignal_log10,
-                     p_min2_CV_msnTotalSignal,
                      p_ratio_cor_peptideIntensityScore, p_pep_ratio_peptideIntensityScore,
-                     p_min2_CV_peptideIntensityScore,
                      p_ratio_cor_peptideTopXIntensityFromTotalScore, p_pep_ratio_peptideTopXIntensityFromTotalScore,
-                     p_min2_CV_peptideTopXIntensityFromTotalScore,
-                     labels = LETTERS[3:5], ncol = 3, align = "v", axis = "lr")
-p_fig4a <- plot_grid(p_point_slope + theme(legend.position = "none"), p_point_slope_legend, p_ratio_density_ms1PrecSIgnal_1, labels = c("A", "", "B"), rel_heights = c(1.9, 0.1, 1), ncol = 1)
-plot_grid(p_fig4a, p_fig4b, rel_widths = c(1, 3))
-ggsave2("figures/fig4.pdf", width = 20, height = 10)
+                     labels = c("C", "D"), ncol = 2)
+p_fig4a <- plot_grid(p_point_slope + theme(legend.position = "none"), p_point_slope_legend, p_ratio_density_ms1PrecSIgnal_1,
+                     labels = c("A", "", "B"), rel_heights = c(1.9, 0.1, 1), ncol = 1)
+p_fig4ab <- plot_grid(p_fig4a, p_fig4b, rel_widths = c(1, 2))
+p_fig4c <- plot_grid(p_min2_CV_msnTotalSignal, p_min2_CV_peptideIntensityScore, p_min2_CV_peptideTopXIntensityFromTotalScore,
+                     nrow = 1, labels = c("E"), align = "h", axis = "tb")
+plot_grid(p_fig4ab, p_fig4c, rel_heights = c(3, 1), nrow = 2)
+ggsave2("figures/fig_4.pdf", width = 15, height = 15)
 
 ```
 
@@ -932,7 +945,7 @@ ggsave2("figures/fig4.pdf", width = 20, height = 10)
 plot_grid(p_min2_ratio_msnTotalSignal, p_min2_ratio_peptideIntensityScore, p_min2_ratio_peptideTopXIntensityFromTotalScore,
                         p_min2_ratio_random_score, p_min2_CV_random_score,
                         labels = LETTERS[1:5], ncol = 3)
-ggsave2("figures/figS_prot_level.pdf", width = 15, height = 10)
+ggsave2("figures/fig_S6.pdf", width = 15, height = 10)
 
 ```
 
@@ -1228,7 +1241,7 @@ p_frc_full_quant_yeast <- ggplot(count_nr_TMTy, aes(x=cond_met, y=quant_rel, fil
 #number of quantified scan groups with full 16plex
 #number of quantified yeast channels
 plot_grid(p_frc_full_quant, p_frc_channel_quant, labels = "AUTO", ncol = 1, align = "v", axis = "lr")
-ggsave2("figures/figS_quant_counts.pdf", width = 15, height = 10)
+ggsave2("figures/fig_S1.pdf", width = 15, height = 10)
 
 ```
 
@@ -1303,7 +1316,7 @@ p_IQ_MQ_correlation <- ggplot(data_IQMQ, aes(x=int_IQ, y=int_MQ)) +
 #direct correlation of all quants (IQ vs FP)
 p_fig2a <- plot_grid(p_nr_quants, p_frc_full_quant_yeast, ncol = 1, labels = "AUTO", align = "v", axis = "lr")
 plot_grid(p_fig2a, p_IQ_FP_correlation, nrow = 1, labels = c("", "C"))
-ggsave2("figures/fig2.pdf", width = 10, height = 5)
+ggsave2("figures/fig_2.pdf", width = 10, height = 5)
 
 ```
 
@@ -1364,7 +1377,7 @@ p_quant_match_rep <- ggplot(rbind(count_IQFP_rep, count_IQMQ_rep), aes(x=cond_di
 #share of matching quants
 plot_grid(p_IQ_FP_correlation_cond, p_IQ_MQ_correlation_cond, p_quant_match_rep,
           ncol = 1, labels = "AUTO", rel_heights = c(3,1,1), align = "v", axis = "lr")
-ggsave2("figures/figS_quant_correlations.pdf", width = 15, height = 15)
+ggsave2("figures/fig_S2.pdf", width = 15, height = 15)
 
 ```
 
@@ -1405,7 +1418,7 @@ count_QC_par_1[, (upset_col) := tstrsplit(cond, "_")]
 upset_dt <- melt(count_QC_par_1, measure.vars = upset_col)
 
 p_sub <- ggplot(upset_dt, aes(x=cond, y=variable, alpha=value)) +
-  geom_point(size=5) + facet_grid(cols = vars(condition)) +
+  geom_point(size=4) + facet_grid(cols = vars(condition)) +
   scale_alpha_manual("ms1PrecSIgnal = 1", values = c("1" = 1, "0" = 0.1)) +
   theme_void() + theme(legend.position = "none", axis.text.y = element_text(hjust=1), strip.text.x = element_blank())
 
@@ -1419,7 +1432,7 @@ p_ms1PrecSignal_vs_purity_bar <- plot_grid(p_main, p_sub, nrow = 2, rel_heights 
 
 #correlation of IQ ms1PrecSignal vs FP purity
 plot_grid(p_ms1PrecSignal_vs_purity_bar, p_ratio_cor_ms1PrecSIgnal, p_ms1PrecSignal_vs_purity_cor, labels = "AUTO", ncol = 1)
-ggsave2("figures/figS_ms1PrecSignal_vs_purity.pdf", width = 10, height = 10)
+ggsave2("figures/fig_S5.pdf", width = 10, height = 10)
 
 ```
 
