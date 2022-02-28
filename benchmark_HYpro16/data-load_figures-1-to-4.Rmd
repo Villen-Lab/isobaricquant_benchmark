@@ -927,8 +927,9 @@ p_fig4b <- plot_grid(p_ratio_cor_msnTotalSignal_log10, p_pep_ratio_msnTotalSigna
                      p_ratio_cor_peptideIntensityScore, p_pep_ratio_peptideIntensityScore,
                      p_ratio_cor_peptideTopXIntensityFromTotalScore, p_pep_ratio_peptideTopXIntensityFromTotalScore,
                      labels = c("C", "D"), ncol = 2)
-p_fig4a <- plot_grid(p_point_slope + theme(legend.position = "none"), p_point_slope_legend, p_ratio_density_ms1PrecSIgnal_1,
-                     labels = c("A", "", "B"), rel_heights = c(1.9, 0.1, 1), ncol = 1)
+p_fig4l <- plot_grid(NULL, p_point_slope_legend, nrow = 1, rel_widths = c(0.1, 0.9))
+p_fig4a <- plot_grid(p_fig4l, p_point_slope + theme(legend.position = "none"), p_ratio_density_ms1PrecSIgnal_1,
+                     labels = c("A", "", "B"), rel_heights = c(0.2, 1.8, 1), ncol = 1)
 p_fig4ab <- plot_grid(p_fig4a, p_fig4b, rel_widths = c(1, 2))
 p_fig4c <- plot_grid(p_min2_CV_msnTotalSignal, p_min2_CV_peptideIntensityScore, p_min2_CV_peptideTopXIntensityFromTotalScore,
                      nrow = 1, labels = c("E"), align = "h", axis = "tb")
