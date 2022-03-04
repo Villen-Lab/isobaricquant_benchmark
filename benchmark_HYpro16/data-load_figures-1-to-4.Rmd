@@ -1,0 +1,1439 @@
+---
+title: "data-load_figures-1-to-4"
+author: "Alexander Hogrebe"
+date: "Current version `r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# Load libraries and functions
+
+To generate the input files for this script, use script Comet-Mokapot-hits-input_IsobaricQuant.Rmd, or download all pre-generated input files from the associated PRIDE repository of this publication and copy them into the "data" folder.
+
+
+```{r libraries, message=FALSE}
+
+#load libraries
+library(data.table)
+library(foreach)
+library(ggplot2)
+library(viridis)
+library(cowplot)
+
+
+#define functions and themes
+#combine two strings
+string_combine <- function(string_list, link = "_", string_priority=c("first", "last")) {
+  if(!is.list(string_list)) stop("'string_list' must be a list of vectors")
+  string_priority <- match.arg(string_priority)
+  
+  if(string_priority=="first") {
+    apply(expand.grid(rev(string_list))[, length(string_list):1], 1, paste, collapse=link)
+  } else {
+    apply(expand.grid(string_list), 1, paste, collapse=link)
+  }
+}
+
+#load function to recreate old Comet peptide sequence output
+peptide_gsub <- function(string, input = c("CO", "FP", "MQ")){
+  input <- match.arg(input)
+  if(!is.character(string)) stop("'input' needs to be a character vector")
+  
+  if(input=="CO"){
+    string <- gsub("n[42.0106]", "(ac)", string, fixed = T)
+    string <- gsub("[15.9949]", "(ox)", string, fixed = T)
+  }
+  
+  if(input=="FP"){
+    string <- gsub("n[305]", "", string, fixed=T)
+    string <- gsub("[305]", "", string, fixed=T)
+    string <- gsub("n[43]", "(ac)", string, fixed=T)
+    string <- gsub("[160]", "(ca)", string, fixed=T)
+    string <- gsub("[147]", "(ox)", string, fixed=T)
+  }
+  
+  if(input=="MQ"){
+    string <- gsub("(Oxidation (M))", "(ox)", string, fixed=T)
+    string <- gsub("(Acetyl (Protein N-term))", "(ac)", string, fixed=T)
+  }
+  
+  return(string)
+}
+
+#dcast fun.aggregate unique function
+dcast_unique <- function(x) paste0(unique(x), collapse = ";")
+
+#dcast fun.aggregate unique function
+dcast_unique_sort <- function(x) paste0(sort(unique(x)), collapse = ";")
+
+#function to report 0, 1, infinite, NA and NAN
+check_nonval <- function(x) {
+  print(paste("Total of", length(x), "contains", length(which(x==0)), "0s,",
+              length(which(x==1)), "1s,", length(which(is.infinite(x))), "inf,",
+              length(which(is.na(x))), "NA", length(which(is.nan(x))), "NAN and",
+              length(which(x!=0 & x !=1 & !is.infinite(x) & !is.na(x) & !is.nan(x) & is.numeric(x))), "valid"))
+}
+
+#y-axis percentage
+theme_yaxis_percentage <- scale_y_continuous(labels = scales::percent_format())
+
+#tilt x-axis labels
+theme_tilt_xaxis <- function(angle, set_vjust = F) {
+  if(set_vjust){
+    theme(axis.text.x = element_text(angle = angle, hjust = 1, vjust = 0.5))
+  } else {
+    theme(axis.text.x = element_text(angle = angle, hjust = 1))
+  }
+}
+
+
+#define sample conditions
+sample_dil_val <- c("empty_1", string_combine(list( c("1to20", "1to10", "1to4", "1to2", "1to1"), as.character(1:3L) )))
+sample_val <- string_combine(list( c("RTS", "SPS", "MS2"), as.character(1L:3L), sample_dil_val ))
+
+cond_val <- unique(gsub("^(.*_.*)_.*_.$", "\\1", sample_val))
+cond_col <- viridis(9)
+names(cond_col) <- cond_val
+
+cond_met_val_old <- c("MS2", "SPS", "RTS")
+cond_met_val <- c("MS2", "SPS-MS3", "RTS-MS3")
+cond_met_col <- viridis(3)
+names(cond_met_col) <- cond_met_val
+
+cond_qua_val <- c("IQ", "FP", "MQ")
+cond_qua_col <- viridis(3)
+names(cond_qua_col) <- cond_qua_val
+
+cond_org_val <- c("YEAST", "HUMAN;YEAST", "HUMAN", "OTHER")
+cond_org_col <- viridis(6)[c(1, 2, 3, 6)]
+names(cond_org_col) <- cond_org_val
+
+sample_dil_col <- viridis(16)
+names(sample_dil_col) <- sample_dil_val
+
+cond_dil_val <- unique(gsub("^(.*)_.$", "\\1", sample_dil_val))
+cond_dil_col <- viridis(6)
+names(cond_dil_col) <- cond_dil_val
+
+aa_val <- c("K", "R", "A", "P")
+aa_col <- viridis(4)
+names(aa_col) <- aa_val
+
+```
+
+
+
+# Read Comet, Mokapot and IsobaricQuant results
+
+Load Comet and Mokapot hits files, then filter Comet with Mokapot q-value and merge with IsobaricQuant output files. Next load IQ generated csv files into R from generated sub-folder structure.
+
+```{r load_Comet}
+
+file_list <- c("a18182_MS2_1", "a18183_SPS_1", "a18184_RTS_1",
+               "a18185_MS2_2", "a18186_SPS_2", "a18187_RTS_2",
+               "a18188_MS2_3", "a18189_SPS_3", "a18190_RTS_3")
+
+data <- foreach(file = file_list, .combine = rbind) %do% {
+  
+  #prepare data, by filtering Comet hits with Percolator output
+  data <- fread(paste0("data/", file, ".txt"), skip = 1)
+  data <- data[!like(protein, "^DECOY_")]
+  perc <- fread(paste0("data/", file, ".mokapot.psms.txt"))
+  
+  #create tag and merge two datasets
+  data[, raw := (file)]
+  data[, tag := paste0(file, "_", scan, "_", charge, "_", num)]
+  data <- merge(x=data, y=perc, by.x="tag", by.y="SpecId", all.x=T, all.y=F)
+  setkey(data, scan)
+  
+  #filter comet output based on q-value
+  data <- data[`mokapot q-value`<=0.01]
+  print(paste0(file, " yields ", data[, .N], " entries of q-value < 0.01"))
+  
+  return(data)
+}
+data[, peptideID := 1:.N, by = c("raw")]
+
+```
+
+## Load isolab.csv files
+
+isolab.csv files generated by IsobaricQuant contain reporter ion intensities per ms2/3 scan group.
+
+```{r load_isolab}
+
+#load isolab.csv files from folder structure
+files <- list.files(path = "data", recursive = T, full.names = T, pattern = "^isolab\\.csv$")
+#read in files via for loop
+data_IQ <- foreach(file = files, .combine = rbind)  %do% {
+  temp <- data.table(raw = gsub("^.*data/([^/]*)_output/isolab\\.csv$", "\\1", file), fread(file))
+  return(temp)
+}
+
+#delete TMT zero and rename samples
+data_IQ <- data_IQ[labelName !="zero"]
+old_lab <- c("126", string_combine(list(as.character(127:133), c("N", "C")), link = ""), "134N")
+data_IQ[, sample := factor(labelName, levels = old_lab, labels = sample_dil_val)]
+
+#check intensity for validity, and set 0 to NA
+data_IQ[, check_nonval(maxIntensity)]
+data_IQ[maxIntensity==0 | maxIntensity==1, maxIntensity := NA]
+#log10 transform intensity, 
+data_IQ[, maxIntensity := log10(maxIntensity)]
+
+```
+
+### Map peptides and isolab
+
+```{r merge_isolab}
+
+data_CO <- merge(data, data_IQ, by = c("raw", "peptideID"), all.x=T, all.y=F)
+
+#kick out RTS IDs without quants
+data_CO <- data_CO[!is.na(labelName)]
+
+data_CO[raw=="a18184_RTS_1", sample := paste0("RTS_1_", sample)]
+data_CO[raw=="a18187_RTS_2", sample := paste0("RTS_2_", sample)]
+data_CO[raw=="a18190_RTS_3", sample := paste0("RTS_3_", sample)]
+data_CO[raw=="a18182_MS2_1", sample := paste0("MS2_1_", sample)]
+data_CO[raw=="a18185_MS2_2", sample := paste0("MS2_2_", sample)]
+data_CO[raw=="a18188_MS2_3", sample := paste0("MS2_3_", sample)]
+data_CO[raw=="a18183_SPS_1", sample := paste0("SPS_1_", sample)]
+data_CO[raw=="a18186_SPS_2", sample := paste0("SPS_2_", sample)]
+data_CO[raw=="a18189_SPS_3", sample := paste0("SPS_3_", sample)]
+
+#parse columns and create conditions
+data_CO[, sample := factor(sample, levels = sample_val)]
+data_CO[, condition := factor(gsub("^(.*_.*)_.*_.$", "\\1", sample), levels = cond_val)]
+data_CO[, cond_met := factor(gsub("^(.*)_.*_.*_.$", "\\1", sample), levels = cond_met_val_old, labels = cond_met_val)]
+data_CO[, cond_dil := factor(gsub("^.*_._(.*_.)$", "\\1", sample), levels = sample_dil_val)]
+data_CO[, replicate := factor(gsub("^.*_(.)$", "\\1", sample), levels = 1L:3L)]
+data_CO[, rep_met := factor(gsub("^.*_(.)_.*_.$", "\\1", sample), levels = 1L:3L)]
+data_CO[, raw_file := factor(raw, levels = unique(sort(raw)), labels = 1:length(unique(raw)))]
+data_CO[, reverse := F]
+data_CO[, gene := character()]
+data_CO[, protein_split := sapply(Proteins, function(x) strsplit(x, "\t", fixed=T) )]
+data_CO[, proteins := lapply(protein_split, function(x) gsub("^[^\\|]*\\|([^\\|]*)\\|[^\\|]*$", "\\1", x) )]
+data_CO[, organism := sapply(protein_split, function(x) dcast_unique_sort(gsub("^[^\\|]*\\|[^\\|]*\\|[^\\|]*_(.*)$", "\\1", x)) )]
+data_CO[, protein := sapply(proteins, function(x) x[1] )]
+data_CO[, peptide_mod := peptide_gsub(gsub("^..(.*)..$", "\\1", modified_peptide), "CO")]
+data_CO[, peptide_seq := gsub("(\\(..\\))", "", peptide_mod)]
+data_CO[, peptide_z := paste0(peptide_mod, "_", charge)]
+data_CO[, charge := charge]
+data_CO[, mz_ratio := (exp_neutral_mass+charge*1.0073)/charge]
+data_CO[, intensity := maxIntensity]
+data_CO[, intensity_MS1 := numeric()]
+data_CO[, score := xcorr]
+data_CO[, qscore := numeric()]
+data_CO[, scan_ms2 := scan]
+data_CO[, scan_ms3 := firstScan]
+data_CO <- data_CO[, .(sample, condition, cond_met, cond_dil, replicate, rep_met, raw_file, reverse,
+                 gene, protein, proteins, organism, peptide_mod, peptide_seq, peptide_z,
+                 charge, mz_ratio, intensity, intensity_MS1, score, qscore, scan_ms2, scan_ms3)]
+
+data_CO <- copy(data_CO)
+setkey(data_CO, sample, peptide_z)
+
+```
+
+
+## Load isopep_extra files
+
+isopep_extra.csv files generated by IsobaricQuant contain QC scores.
+
+```{r load_isopep_extra}
+
+#create IQ wide table
+data_IQw <- cbind(dcast(data_IQ, raw + peptideID ~ sample, value.var = "maxIntensity"),
+                  dcast(data_IQ, raw + peptideID ~ ., value.var = c("firstScan", "lastScan", "maxIntensityScan"),
+                        fun.aggregate = dcast_unique)[, -c(1,2)])
+
+#load isopep_extra.csv files from folder structure
+files <- list.files(path = "data", recursive = T, full.names = T, pattern = "^isopep_extra\\.csv$")
+#read in files via for loop
+data_IQ_ex <- foreach(file = files, .combine = rbind)  %do% {
+  temp <- data.table(raw = gsub("^.*data/([^/]*)_output/isopep_extra\\.csv$", "\\1", file), fread(file))
+  return(temp)
+}
+#names(data_IQ)
+data_IQ_ex[, quantID := NULL]
+
+```
+
+### Map peptides and isopep_extra
+
+```{r merge_isopep_extra}
+
+#merge IQ isolab onto CO
+data_COw <- merge(data, data_IQw, by = c("raw", "peptideID"), all.x=T, all.y=F)
+
+#kick out RTS IDs without quants
+data_COw <- data_COw[!is.na(maxIntensityScan)]
+
+#parse columns and create conditions
+data_COw[, sample := factor(gsub("^.*_(.*_.*)$", "\\1", raw), levels = cond_val)]
+data_COw[, condition := factor(gsub("^(.*)_.$", "\\1", sample), levels = cond_met_val_old, labels = cond_met_val)]
+data_COw[, replicate := factor(gsub("^.*_(.)$", "\\1", sample), levels = 1L:3L)]
+data_COw[, raw_file := factor(raw, levels = unique(sort(raw)), labels = 1:length(unique(raw)))]
+data_COw[, reverse := F]
+data_COw[, gene := character()]
+data_COw[, protein_split := sapply(Proteins, function(x) strsplit(x, "\t", fixed=T) )]
+data_COw[, proteins := lapply(protein_split, function(x) gsub("^[^\\|]*\\|([^\\|]*)\\|[^\\|]*$", "\\1", x) )]
+data_COw[, organism := sapply(protein_split, function(x) dcast_unique_sort(gsub("^[^\\|]*\\|[^\\|]*\\|[^\\|]*_(.*)$", "\\1", x)) )]
+data_COw[, protein := sapply(proteins, function(x) x[1] )]
+data_COw[, peptide_mod := peptide_gsub(gsub("^..(.*)..$", "\\1", modified_peptide), "CO")]
+data_COw[, peptide_seq := gsub("(\\(..\\))", "", peptide_mod)]
+data_COw[, peptide_z := paste0(peptide_mod, "_", charge)]
+data_COw[, charge := charge]
+data_COw[, mz_ratio := (exp_neutral_mass+charge*1.0073)/charge]
+data_COw[, intensity_MS1 := numeric()]
+data_COw[, score := xcorr]
+data_COw[, qscore := numeric()]
+data_COw[, scan_ms2 := scan]
+data_COw[, scan_ms3 := firstScan]
+data_COw <- data_COw[, .SD, .SDcols = c("raw", "peptideID", "sample", "condition", "replicate", "raw_file", "reverse",
+                                        "gene", "protein", "proteins", "organism", "peptide_mod", "peptide_seq", "peptide_z",
+                                        "charge", "mz_ratio", sample_dil_val, "intensity_MS1",
+                                        "score", "qscore", "scan_ms2", "scan_ms3")]
+setkey(data_COw, sample, peptide_z)
+
+#merge IQ isopep_extra onto CO wide
+data_COw <- merge(data_COw, data_IQ_ex, by = c("raw", "peptideID"), all.x=T, all.y=F)
+data_COw[, c("raw", "peptideID") := NULL]
+
+data_COw <- copy(data_COw)
+setkey(data_COw, sample, peptide_z)
+
+```
+
+# QC parameters
+
+IsobaricQuant generates a variety of QC scores that can be used to assess and filter ratio compression within data sets.
+
+## Calculate ratios
+
+The HYpro16 benchmark consists of 16 TMTpro channels of mixed yeast and human peptides. Human peptides were labeled 1:1 for all channels. Yeast peptides were empty in channel 126, and then diluted 20:10:4:2:1 in triplicates each from 127N to 134N. Throughout this study, the 20:1 ratio is mostly used for quantitative comparisons.
+
+```{r ratios}
+
+#calculate ratios
+data_COw[, ratio_20_1 := 10^(`1to1_1`-`1to20_1`)]
+data_COw[, ratio_20_2 := 10^(`1to1_2`-`1to20_2`)]
+data_COw[, ratio_20_3 := 10^(`1to1_3`-`1to20_3`)]
+data_COw[, ratio_20_m := apply(.SD, 1, function(x) mean(x, na.rm=T) ), .SDcols = c("ratio_20_1", "ratio_20_2", "ratio_20_3")]
+
+data_COw[, ratio_10_1 := 10^(`1to1_1`-`1to10_1`)]
+data_COw[, ratio_10_2 := 10^(`1to1_2`-`1to10_2`)]
+data_COw[, ratio_10_3 := 10^(`1to1_3`-`1to10_3`)]
+data_COw[, ratio_10_m := apply(.SD, 1, function(x) mean(x, na.rm=T) ), .SDcols = c("ratio_10_1", "ratio_10_2", "ratio_10_3")]
+
+data_COw[, ratio_4_1 := 10^(`1to1_1`-`1to4_1`)]
+data_COw[, ratio_4_2 := 10^(`1to1_2`-`1to4_2`)]
+data_COw[, ratio_4_3 := 10^(`1to1_3`-`1to4_3`)]
+data_COw[, ratio_4_m := apply(.SD, 1, function(x) mean(x, na.rm=T) ), .SDcols = c("ratio_4_1", "ratio_4_2", "ratio_4_3")]
+
+data_COw[, ratio_2_1 := 10^(`1to1_1`-`1to2_1`)]
+data_COw[, ratio_2_2 := 10^(`1to1_2`-`1to2_2`)]
+data_COw[, ratio_2_3 := 10^(`1to1_3`-`1to2_3`)]
+data_COw[, ratio_2_m := apply(.SD, 1, function(x) mean(x, na.rm=T) ), .SDcols = c("ratio_2_1", "ratio_2_2", "ratio_2_3")]
+
+#calculate empty channel percentage of full
+data_COw[!is.na(empty_1), ratio_empty_max := apply(.SD, 1, function(x) 10^(x[1]-max(x, na.rm=T)) ), .SDcols = sample_dil_val]
+
+#calculate ratio counts
+count_cols <- c("ratio_20_m", "ratio_10_m", "ratio_4_m", "ratio_2_m", "ratio_empty_max")
+count_names <- c("ratio 1:20", "ratio 1:10", "ratio 1:4", "ratio 1:2", "ratio empty max")
+data_COw[, ratio_any_valid := apply(.SD, 1, function(x) any(!is.na(x)) ), .SDcols = count_cols]
+
+```
+
+
+## QC overview pdfs
+
+This code block creates pdf output files that correlate TMT ratios with each individual QC parameter, separated into the MS acquisition methods. The output files are not included in this report, as they are fairly large and contain one page per MS acquisition method and QC score.
+
+```{r overview_pdfs, eval=FALSE, include=TRUE}
+
+#define y intercepts
+yic <- data.table(type = factor(count_names, levels=count_names), intercept = (c(20, 10, 4, 2, 0)))
+
+
+#define plotting function
+QC_par_plot <- function(data, par_list, par_title, file_name) {
+  temp <- copy(data)
+  max_y <- temp[,  max(ratio, na.rm=T)]
+  
+  plot_list <- foreach(QC_par = QC_par_list, .combine = c) %do% {
+    p_1 <- ggplot(temp, aes_string(x=QC_par[[1]], y="ratio")) +
+      geom_point(alpha=0.1) + geom_smooth(method="lm") + geom_hline(data = yic, mapping = aes(yintercept = intercept), linetype = "dashed") +
+      facet_wrap(type ~ ., scales = "free_y", nrow = 1) + theme_minimal_grid() +
+      ggtitle(paste0(par_title[1], QC_par[[1]], " ", QC_par[[2]], par_title[2]))
+    
+    temp[, bin := factor(QC_par[[3]][1], levels = QC_par[[3]])]
+    temp[get(QC_par[[1]])>=QC_par[[4]][1], bin := QC_par[[3]][2]]
+    temp[get(QC_par[[1]])>=QC_par[[4]][2], bin := QC_par[[3]][3]]
+    
+    lab <- temp[!is.na(get(QC_par[[1]])) & !is.na(ratio), .(N = .N, y = max(ratio, na.rm=T)), keyby = c("type", "bin")]
+    
+    p_2 <- ggplot(temp, aes(x=bin, y=ratio)) + geom_hline(data = yic, mapping = aes(yintercept = intercept), linetype = "dashed") +
+      geom_boxplot() + geom_text(data=lab, aes(x=bin, y=y, label=N), nudge_x = -0.25) +
+      facet_wrap(type ~ ., scales = "free_y", nrow = 1) + theme_minimal_grid()
+    
+    p <- plot_grid(p_1, p_2, ncol = 1)
+    return(list(p))
+  }
+  
+  #multi page pdf from plot_list
+  pdf(paste0("figures/", file_name), width = 20, height = 10)
+  for (i in 1:length(plot_list)) {
+    print(plot_list[[i]])
+  }
+  dev.off()
+  
+}
+
+
+# === MS1-based QC parameters ===
+QC_par_list <- list( list( "ms1PrecSIgnal", "(= int MS1 prec in MS1 window)", c("<0.75", "0.75<x<1", "=1"), c(0.75, 1) ) )
+QC_cols <- sapply(QC_par_list, function(x) x[[1]] )
+
+##MS1-based (MS2 only)
+QC_data <- data_COw[organism=="YEAST" & ratio_any_valid==T & condition %in% c("MS2")]
+QC_data <- melt(QC_data, id.vars = QC_cols, measure.vars = count_cols, variable.name = "type", value.name = "ratio")
+QC_data[, type := factor(type, levels = count_cols, labels = count_names)]
+
+QC_par_plot(QC_data, QC_par_list, c("MS1 ", " (MS2 only)"), "MS1-parameters_MS2-only.pdf")
+
+
+##MS1-based (MS3 only)
+QC_data <- data_COw[organism=="YEAST" & ratio_any_valid==T & condition %in% cond_met_val[c(2,3)]]
+QC_data <- melt(QC_data, id.vars = QC_cols, measure.vars = count_cols, variable.name = "type", value.name = "ratio")
+QC_data[, type := factor(type, levels = count_cols, labels = count_names)]
+
+QC_par_plot(QC_data, QC_par_list, c("MS1 ", " (MS3 only)"), "MS1-parameters_MS3-only.pdf")
+
+
+
+# === MS2-based QC parameters ===
+QC_par_list <- list( list( "msnTotalSignal_log10", "= int rep", c("<1e6", "1e6<x<1e7", ">1e7"), c(6, 7) ),
+                     list( "peptideIntensityScore", "= int b/y in total MS2", c("<0.25", "0.25<x<0.5", ">0.5"), c(0.25, 0.5) ),
+                     list( "peptideTopXIntensityScore", "= int topX b/y in topX", c("<0.8", "0.8<x<1", "=1"), c(0.8, 1) ),
+                     list( "peptideTopXIntensityFromTotalScore", "= int topX b/y in MS2", c("<0.15", "0.15<x<0.3", ">0.3"), c(0.15, 0.3) ),
+                     list( "topXIntensityFromTotalScore", "= int topX in MS2", c("<0.2", "0.2<x<0.4", ">0.4"), c(0.2, 0.4) ),
+                     list( "topXPeptidePeaksRatio", "= num b/y in topX", c("<0.25", "0.25<x<0.75", ">0.75"), c(0.25, 0.75) ),
+                     list( "topPeakIntensityTopXScore", "= int top peak in topX", c("<0.2", "0.2<x<0.4", ">0.4"), c(0.2, 0.4) ),
+                     list( "topPeakIntensityScore", "= int top peak in MS2", c("<0.05", "0.05<x<0.1", ">0.1"), c(0.05, 0.1) ),
+                     list( "topPeakFromPeptide", "= is top peak b/y", c("no", "no2", "yes"), c(0.5, 1) ),
+                     list( "topPeakFromNL", "= is top peak NL", c("no", "no2", "yes"), c(0.5, 1) ) )
+QC_cols <- sapply(QC_par_list, function(x) x[[1]] )
+
+#MS2-based (MS2 only)
+#good ones: topXIntensityFromTotalScore, msnTotalSignal_log10
+QC_data <- data_COw[organism=="YEAST" & ratio_any_valid==T & condition %in% c("MS2")]
+QC_data[, msnTotalSignal_log10 := log10(msnTotalSignal)]
+QC_data <- melt(QC_data, id.vars = QC_cols, measure.vars = count_cols, variable.name = "type", value.name = "ratio")
+QC_data[, type := factor(type, levels = count_cols, labels = count_names)]
+
+QC_par_plot(QC_data, QC_par_list, c("MS2 ", " (MS2 only)"), "MS2-parameters_MS2-only.pdf")
+
+#MS2-based (SPS only)
+#good ones: peptideIntensityScore, topXIntensityFromTotalScore
+QC_data <- data_COw[organism=="YEAST" & ratio_any_valid==T & condition %in% cond_met_val[c(2)]]
+QC_data[, msnTotalSignal_log10 := log10(msnTotalSignal)]
+QC_data <- melt(QC_data, id.vars = QC_cols, measure.vars = count_cols, variable.name = "type", value.name = "ratio")
+QC_data[, type := factor(type, levels = count_cols, labels = count_names)]
+
+QC_par_plot(QC_data, QC_par_list, c("MS2 ", " (SPS only)"), "MS2-parameters_SPS-only.pdf")
+
+#MS2-based (RTS only)
+#good ones: peptideIntensityScore, topXIntensityFromTotalScore
+QC_data <- data_COw[organism=="YEAST" & ratio_any_valid==T & condition %in% cond_met_val[c(3)]]
+QC_data[, msnTotalSignal_log10 := log10(msnTotalSignal)]
+QC_data <- melt(QC_data, id.vars = QC_cols, measure.vars = count_cols, variable.name = "type", value.name = "ratio")
+QC_data[, type := factor(type, levels = count_cols, labels = count_names)]
+
+QC_par_plot(QC_data, QC_par_list, c("MS2 ", " (RTS only)"), "MS2-parameters_RTS-only.pdf")
+
+
+
+
+# === MS3-based QC parameters ===
+QC_par_list <- list( list( "precRepIntRatio", "= int b/y in SPS window", c("<0.5", "0.5<x<0.75", ">0.75"), c(0.5, 0.75) ),
+                     list( "precTPIntRatio", "= int SPS in SPS window", c("<0.8", "0.8<x<0.9", ">0.9"), c(0.8, 0.9) ),
+                     list( "precTPNumRatio", "= num SPS in SPS window", c("<0.3", "0.3<x<0.4", ">0.4"), c(0.3, 0.4) ) )
+QC_cols <- sapply(QC_par_list, function(x) x[[1]] )
+
+#MS2-based (SPS only)
+QC_data <- data_COw[organism=="YEAST" & ratio_any_valid==T & condition %in% cond_met_val[c(2)]]
+QC_data[is.infinite(precRepIntRatio), precRepIntRatio := NA]
+QC_data <- melt(QC_data, id.vars = QC_cols, measure.vars = count_cols, variable.name = "type", value.name = "ratio")
+QC_data[, type := factor(type, levels = count_cols, labels = count_names)]
+
+QC_par_plot(QC_data, QC_par_list, c("MS3 ", " (SPS only)"), "MS3-parameters_SPS-only.pdf")
+
+#MS2-based (RTS only)
+QC_data <- data_COw[organism=="YEAST" & ratio_any_valid==T & condition %in% cond_met_val[c(3)]]
+QC_data[is.infinite(precRepIntRatio), precRepIntRatio := NA]
+QC_data <- melt(QC_data, id.vars = QC_cols, measure.vars = count_cols, variable.name = "type", value.name = "ratio")
+QC_data[, type := factor(type, levels = count_cols, labels = count_names)]
+
+QC_par_plot(QC_data, QC_par_list, c("MS3 ", " (RTS only)"), "MS3-parameters_RTS-only.pdf")
+
+```
+
+## QC score scaling
+
+This code block creates score raw and scaled density plots (Fig S4).
+
+```{r score_scaling}
+
+# heatmap of all correlations and slopes ?!?
+count_cols <- c("ratio_20_m", "ratio_10_m", "ratio_4_m", "ratio_2_m", "ratio_empty_max")
+count_names <- c("ratio 1:20", "ratio 1:10", "ratio 1:4", "ratio 1:2", "ratio empty max")
+QC_cols <-
+  c("ms1PrecSIgnal", "msnTotalSignal_log10", "peptideIntensityScore", "peptideTopXIntensityScore", "peptideTopXIntensityFromTotalScore",
+    "topXIntensityFromTotalScore", "topXPeptidePeaksRatio", "topPeakIntensityTopXScore", "topPeakIntensityScore",
+    "topPeakFromPeptide", "topPeakFromNL", "precRepIntRatio", "precTPIntRatio", "precTPNumRatio")
+#log10 transform msnTotalSignal
+data_COw[, msnTotalSignal_log10 := log10(msnTotalSignal)]
+#melt reporter ion columns into tidy format
+QC_data <- melt(data_COw[organism=="YEAST" & ratio_any_valid==T],
+                id.vars = c("sample", "condition", QC_cols), measure.vars = count_cols, variable.name = "type", value.name = "ratio")
+QC_data[, type := factor(type, levels = count_cols, labels = count_names)]
+#melt QC columns into tidy format
+QC_data[, topPeakFromPeptide := as.numeric(topPeakFromPeptide)]
+QC_data[, topPeakFromNL := as.numeric(topPeakFromNL)]
+QC_data <- melt(QC_data, id.vars = c("sample", "condition", "type", "ratio"), measure.vars = QC_cols,
+                variable.name = "QC_par", value.name = "score")
+#remove inf scores and MS2-files from MS3-QC-scores
+QC_data <- QC_data[!is.infinite(score)]
+QC_data <- QC_data[!is.nan(score)]
+QC_data <- QC_data[!(QC_par %in% c("precRepIntRatio", "precTPIntRatio", "precTPNumRatio") & condition %in% "MS2")]
+
+#scale scores from 0 to 1 within QC_par
+QC_data[, score_scaled := (score-min(score))/max(score-min(score)), by = c("sample", "type", "QC_par")]
+
+p_scores_MS2 <- ggplot(QC_data[type=="ratio 1:20" & condition=="MS2"], aes(x=score)) +
+  geom_density() + facet_wrap(vars(QC_par), scales="free") + theme_minimal_grid() + ggtitle("MS2 scores") +
+  theme(strip.text.x = element_text(size = 8))
+p_scores_SPS <- ggplot(QC_data[type=="ratio 1:20" & condition=="SPS-MS3"], aes(x=score)) +
+  geom_density() + facet_wrap(vars(QC_par), scales="free") + theme_minimal_grid() + ggtitle("SPS-MS3 scores") +
+  theme(strip.text.x = element_text(size = 8))
+p_scores_RTS <- ggplot(QC_data[type=="ratio 1:20" & condition=="RTS-MS3"], aes(x=score)) +
+  geom_density() + facet_wrap(vars(QC_par), scales="free") + theme_minimal_grid() + ggtitle("RTS-MS3 scores") +
+  theme(strip.text.x = element_text(size = 8))
+
+p_scores_scaled_MS2 <- ggplot(QC_data[type=="ratio 1:20" & condition=="MS2"], aes(x=score_scaled)) +
+  geom_density() + facet_wrap(vars(QC_par), scales="free") + theme_minimal_grid() + ggtitle("MS2 scores scaled") +
+  theme(strip.text.x = element_text(size = 8))
+p_scores_scaled_SPS <- ggplot(QC_data[type=="ratio 1:20" & condition=="SPS-MS3"], aes(x=score_scaled)) +
+  geom_density() + facet_wrap(vars(QC_par), scales="free") + theme_minimal_grid() + ggtitle("SPS-MS3 scores scaled") +
+  theme(strip.text.x = element_text(size = 8))
+p_scores_scaled_RTS <- ggplot(QC_data[type=="ratio 1:20" & condition=="RTS-MS3"], aes(x=score_scaled)) +
+  geom_density() + facet_wrap(vars(QC_par), scales="free") + theme_minimal_grid() + ggtitle("RTS-MS3 scores scaled") +
+  theme(strip.text.x = element_text(size = 8))
+
+```
+
+### Figure S4
+
+```{r fig_S4, fig.width=20, fig.height=20}
+
+#score distributions, raw and scaled
+plot_grid(p_scores_SPS, p_scores_RTS, p_scores_MS2, labels = "AUTO", ncol = 2, rel_heights = c(4,3))
+ggsave2("figures/fig_S4.pdf", width = 20, height = 12.5)
+
+```
+
+## QC slope heatmap
+
+This code block creates slope correlation heatmaps (Fig 4a).
+
+```{r slope_heatmap}
+
+#calculate lm slope and cor
+QC_data_lm <- QC_data[!is.na(ratio) & !is.na(score_scaled), .(slope = coefficients(summary(lm(ratio ~ score_scaled, .SD)))[2, "Estimate"],
+                          R_squared = cor(ratio, score_scaled)^2),
+                      keyby = c("condition", "QC_par", "type")]
+QC_data_lm[, lab_R_squared := paste0("R^2 = ", round(R_squared, 2))]
+QC_data_lm[type!="ratio empty max", col_R_squared := ifelse(slope<2, "grey", "black")]
+QC_data_lm[type=="ratio empty max", col_R_squared := ifelse(slope>-0.05, "grey", "black")]
+
+#plots for supplementary figure
+p_slope_r_all <- ggplot(QC_data_lm[type!="ratio empty max"], aes(x=type, y=QC_par, fill=slope, label=lab_R_squared)) +
+  geom_tile() + geom_text(aes(color=col_R_squared)) +
+  scale_fill_viridis(option = "E") + scale_color_identity("slope") + xlab("") + ylab("") +
+  facet_grid(rows = vars(condition)) + theme_minimal_grid()
+
+p_slope_r_empty <- ggplot(QC_data_lm[type=="ratio empty max"], aes(x=condition, y=QC_par, fill=-slope, label=lab_R_squared)) +
+  geom_tile() + geom_text(aes(color=col_R_squared)) +
+  scale_fill_viridis("negative\nslope", option = "E") + scale_color_identity() + xlab("") + ylab("") +
+  theme_minimal_grid()
+
+
+#facet with MS-level labeling
+QC_par_list <- list( list( "ms1PrecSIgnal", "= intensity precursor in MS1 window", c("<0.75", "0.75<x<1", "=1"), c(0.75, 1) ),
+                     list( "msnTotalSignal_log10", "= intensity reporters", c("<1e6", "1e6<x<1e7", ">1e7"), c(6, 7) ),
+                     list( "peptideIntensityScore", "= intensity b/y in total MS2", c("<0.25", "0.25<x<0.5", ">0.5"), c(0.25, 0.5) ),
+                     list( "peptideTopXIntensityScore", "= intensity topX b/y in topX", c("<0.8", "0.8<x<1", "=1"), c(0.8, 1) ),
+                     list( "peptideTopXIntensityFromTotalScore", "= intensity topX b/y in MS2", c("<0.15", "0.15<x<0.3", ">0.3"), c(0.15, 0.3) ),
+                     list( "topXIntensityFromTotalScore", "= intensity topX in MS2", c("<0.2", "0.2<x<0.4", ">0.4"), c(0.2, 0.4) ),
+                     list( "topXPeptidePeaksRatio", "= number b/y in topX", c("<0.25", "0.25<x<0.75", ">0.75"), c(0.25, 0.75) ),
+                     list( "topPeakIntensityTopXScore", "= intensity top peak in topX", c("<0.2", "0.2<x<0.4", ">0.4"), c(0.2, 0.4) ),
+                     list( "topPeakIntensityScore", "= intensity top peak in MS2", c("<0.05", "0.05<x<0.1", ">0.1"), c(0.05, 0.1) ),
+                     list( "topPeakFromPeptide", "= is top peak b/y?", c("no", "no2", "yes"), c(0.5, 1) ),
+                     list( "topPeakFromNL", "= is top peak NL?", c("no", "no2", "yes"), c(0.5, 1) ),
+                     list( "precRepIntRatio", "= intensity b/y in SPS windows", c("<0.5", "0.5<x<0.75", ">0.75"), c(0.5, 0.75) ),
+                     list( "precTPIntRatio", "= intensity peaks in SPS windows", c("<0.8", "0.8<x<0.9", ">0.9"), c(0.8, 0.9) ),
+                     list( "precTPNumRatio", "= number peaks in SPS windows", c("<0.3", "0.3<x<0.4", ">0.4"), c(0.3, 0.4) ) )
+
+QC_data_lm[, QC_par_ext := factor(QC_par, levels = sapply(QC_par_list, function(x) x[1] )[14:1],
+                                  labels = sapply(QC_par_list, function(x) paste0(x[1], "\n", x[2]) )[14:1])]
+QC_data_lm[, QC_par_des := factor(QC_par, levels = sapply(QC_par_list, function(x) x[1] ),
+                                  labels = sapply(QC_par_list, function(x) gsub("= ", "", x[2], fixed = T) ))]
+
+#filter unhelpful scores
+QC_data_lm <- QC_data_lm[!QC_par %in% c("topPeakIntensityTopXScore", "topPeakFromNL", "precTPNumRatio")]
+QC_data_lm[, condition := factor(condition, levels = cond_met_val, labels = c("MS2", "SPS-\nMS3", "RTS-\nMS3"))]
+
+p_point_slope <- ggplot(QC_data_lm[type=="ratio 1:20"], aes(x=condition, y=QC_par_ext, color=slope, size=R_squared)) +
+  geom_point() + geom_hline(yintercept = c(2.5, 10.5), linetype = "dashed") + xlab("") + ylab("") +
+  scale_color_viridis("slope", option = "E") + scale_size_continuous("R^2", range = c(0,10)) +
+  theme_minimal_grid() + theme(legend.position = "bottom")
+p_point_slope_legend <- get_legend(p_point_slope)
+
+```
+
+## QC to ratio correlations
+
+This code block generates QC score to 20:1 yeast peptide ratio correlations (Fig 4b and 4c).
+
+```{r}
+
+#here: only use yeast peptides
+data_COy <- data_COw[organism=="YEAST"]
+
+# == QC score vs ratio correlation ==
+#correlation and cutoff plots
+data_COy_MS3 <- data_COy[ratio_any_valid==T & !is.na(peptideIntensityScore) & !is.na(ratio_20_m)]
+p_ratio_cor_peptideIntensityScore <- ggplot(data_COy_MS3, aes(x=peptideIntensityScore, y=ratio_20_m)) +
+  stat_density_2d(geom = "polygon", aes(fill = after_stat(level))) +
+  geom_hline(yintercept = 20, linetype = "dashed") + xlim(0,1) +
+  facet_grid(rows = vars(condition)) + scale_fill_viridis("density") + theme_minimal_grid() + ylab("peptide mean ratio 20:1")
+
+
+data_COy_MS3 <- data_COy[ratio_any_valid==T & !is.na(peptideTopXIntensityFromTotalScore) & !is.na(ratio_20_m)]
+p_ratio_cor_peptideTopXIntensityFromTotalScore <- ggplot(data_COy_MS3, aes(x=peptideTopXIntensityFromTotalScore, y=ratio_20_m)) +
+  stat_density_2d(geom = "polygon", aes(fill = after_stat(level))) +
+  geom_hline(yintercept = 20, linetype = "dashed") + xlim(0,1) +
+  facet_grid(rows = vars(condition)) + scale_fill_viridis("density") + theme_minimal_grid() + ylab("peptide mean ratio 20:1")
+
+
+data_COy_MS3 <- data_COy[ratio_any_valid==T & !is.na(msnTotalSignal_log10) & !is.na(ratio_20_m)]
+p_ratio_cor_msnTotalSignal_log10 <- ggplot(data_COy_MS3, aes(x=msnTotalSignal_log10, y=ratio_20_m)) +
+  stat_density_2d(geom = "polygon", aes(fill = after_stat(level))) +
+  geom_hline(yintercept = 20, linetype = "dashed") + xlab("log 10 msnTotalSignal") +
+  facet_grid(rows = vars(condition)) + scale_fill_viridis("density") + theme_minimal_grid() + ylab("peptide mean ratio 20:1")
+
+
+data_COy_MS3 <- data_COy[ratio_any_valid==T & !is.na(ms1PrecSIgnal) & !is.na(ratio_20_m)]
+#label number of ms1PrecSIgnal==1
+data_COy_MS3[, ms1PrecSIgnal_eq1 := ms1PrecSIgnal==1]
+count_1 <- data_COy_MS3[, .N, keyby = c("condition", "ms1PrecSIgnal_eq1")][, .(ms1_1 = paste0(round(N[2]/sum(N), 3)*100, "% excluded")),
+                                                                           keyby = c("condition")]
+p_ratio_cor_ms1PrecSIgnal <- ggplot(data_COy_MS3[ms1PrecSIgnal!=1], aes(x=ms1PrecSIgnal, y=ratio_20_m)) +
+  stat_density_2d(geom = "polygon", aes(fill = after_stat(level))) + geom_hline(yintercept = 20, linetype = "dashed") +
+  geom_text(data=count_1, aes(x=0, y=19, label=ms1_1), hjust=0, vjust=1) +
+  xlab("ms1PrecSignal (excluding =1)") + xlim(0,1) + ylim(0,25) +
+  facet_grid(cols = vars(condition)) + scale_fill_viridis("density") + theme_minimal_grid() + ylab("peptide mean ratio 20:1")
+
+
+count_1_shown <- data_COy_MS3[, .N, keyby = c("condition", "ms1PrecSIgnal_eq1")][, .(ms1_1 = paste0(round(N[2]/sum(N), 3)*100, "% shown")), keyby = c("condition")]
+p_ratio_density_ms1PrecSIgnal_1 <- ggplot(data_COy_MS3[ms1PrecSIgnal==1], aes(x=ratio_20_m)) +
+  geom_density() + geom_vline(xintercept = 20, linetype = "dashed") + xlab("peptide mean ratio 20:1\n(only showing ms1PrecSignal = 1)") +
+  geom_text(data=count_1_shown, aes(x=35, y=0.14, label=ms1_1), hjust=0.5, vjust=1) + ylab("density") +
+  facet_grid(rows = vars(condition)) + theme_minimal_grid()
+
+```
+
+## Peptide mean ratio
+
+This code block generates yeast peptide mean ratios plots (Fig 4d).
+
+```{r}
+
+#here: only use yeast peptides
+data_COy <- data_COw[organism=="YEAST"]
+
+
+# == peptide mean ratio, separated by methods ==
+#peptideIntensityScore
+QC_pep_ratio <-
+  rbind(data_COy[!is.na(ratio_20_m), .(ratio = ratio_20_m, type = c(">0")),
+                 keyby = c("sample", "condition", "protein")],
+        data_COy[!is.na(ratio_20_m) & peptideIntensityScore>0.25, .(ratio = ratio_20_m, type = c(">0.25")),
+                 keyby = c("sample", "condition", "protein")],
+        data_COy[!is.na(ratio_20_m) & peptideIntensityScore>0.5, .(ratio = ratio_20_m, type = c(">0.5")),
+                 keyby = c("sample", "condition", "protein")])
+QC_pep_ratio[, type := factor(type, levels = c(">0", ">0.25", ">0.5"))]
+lab <- QC_pep_ratio[!is.na(ratio), .(N = .N, y = quantile(ratio, na.rm=T)["75%"]), keyby = c("condition", "type")]
+
+p_pep_ratio_peptideIntensityScore <- ggplot(QC_pep_ratio, aes(x=condition, y=ratio, fill=type)) +
+  geom_boxplot(outlier.alpha = 0.2, color = "grey", lwd=0.5, fatten=1) +
+  geom_text(data=lab, aes(x=condition, y=y+c(1.5, 3.5, 4), label=N), position = position_dodge(0.75), size = 3) +
+  scale_fill_viridis_d("peptideIntensityScore", option = "B") + xlab("") + ylab("peptide mean ratio 20:1") +
+  theme_minimal_hgrid() + theme(legend.position = "top") + guides(fill = guide_legend(title.position="top"))
+
+
+
+#peptideTopXIntensityFromTotalScore
+QC_pep_ratio <-
+  rbind(data_COy[!is.na(ratio_20_m), .(ratio = ratio_20_m, type = c(">0")),
+                 keyby = c("sample", "condition", "protein")],
+        data_COy[!is.na(ratio_20_m) & peptideTopXIntensityFromTotalScore>0.15, .(ratio = ratio_20_m, type = c(">0.15")),
+                 keyby = c("sample", "condition", "protein")],
+        data_COy[!is.na(ratio_20_m) & peptideTopXIntensityFromTotalScore>0.3, .(ratio = ratio_20_m, type = c(">0.3")),
+                 keyby = c("sample", "condition", "protein")])
+QC_pep_ratio[, type := factor(type, levels = c(">0", ">0.15", ">0.3"))]
+lab <- QC_pep_ratio[!is.na(ratio), .(N = .N, y = quantile(ratio, na.rm=T)["75%"]), keyby = c("condition", "type")]
+
+p_pep_ratio_peptideTopXIntensityFromTotalScore <- ggplot(QC_pep_ratio, aes(x=condition, y=ratio, fill=type)) +
+  geom_boxplot(outlier.alpha = 0.2, color = "grey", lwd=0.5, fatten=1) +
+  geom_text(data=lab, aes(x=condition, y=y+c(1.5, 3.5, 4), label=N), position = position_dodge(0.75), size = 3) +
+  scale_fill_viridis_d("peptideTopXIntensityFromTotalScore", option = "B") + xlab("") + ylab("peptide mean ratio 20:1") +
+  theme_minimal_hgrid() + theme(legend.position = "top") + guides(fill = guide_legend(title.position="top"))
+
+
+#msnTotalSignal_log10
+QC_pep_ratio <-
+  rbind(data_COy[!is.na(ratio_20_m), .(ratio = ratio_20_m, type = c(">0")),
+                 keyby = c("sample", "condition", "protein")],
+        data_COy[!is.na(ratio_20_m) & msnTotalSignal_log10>6, .(ratio = ratio_20_m, type = c(">1e6")),
+                 keyby = c("sample", "condition", "protein")],
+        data_COy[!is.na(ratio_20_m) & msnTotalSignal_log10>7, .(ratio = ratio_20_m, type = c(">1e7")),
+                 keyby = c("sample", "condition", "protein")])
+QC_pep_ratio[, type := factor(type, levels = c(">0", ">1e6", ">1e7"))]
+lab <- QC_pep_ratio[!is.na(ratio), .(N = .N, y = quantile(ratio, na.rm=T)["75%"]), keyby = c("condition", "type")]
+
+p_pep_ratio_msnTotalSignal_log10 <- ggplot(QC_pep_ratio, aes(x=condition, y=ratio, fill=type)) +
+  geom_boxplot(outlier.alpha = 0.2, color = "grey", lwd=0.5, fatten=1) +
+  geom_text(data=lab, aes(x=condition, y=y+c(1.5, 2.5, 3), label=N), position = position_dodge(0.75), size = 3) +
+  scale_fill_viridis_d("msnTotalSignal", option = "B") + xlab("") + ylab("peptide mean ratio 20:1") +
+  theme_minimal_hgrid() + theme(legend.position = "top") + guides(fill = guide_legend(title.position="top"))
+
+```
+
+## Protein CV and median ratio (min 2 peptides)
+
+This code block generates yeast protein median ratio plots, where filtering at all cutoffs retains at least 2 peptide observations per protein (Fig 4e and S6).
+
+```{r}
+
+#here: only use yeast peptides
+data_COy <- data_COw[organism=="YEAST"]
+data_COy[!is.na(ratio_20_m), n_pep := .N, by = c("sample", "protein")]
+
+#1: calculate number of peptides per protein (number peptides above QC threshold, min 2)
+#2: sort by protein & QC score
+#3: calculate accuracy & CV per peptides indicated peptide column
+
+# == msnTotalSignal_log10 ==
+data_min2_msnT <- data_COy[n_pep>=2, .SD, keyby = c("sample", "protein", "msnTotalSignal")]
+
+data_min2_msnT[, QC_thr1 := msnTotalSignal>1e6]
+data_min2_msnT[, QC_thr2 := msnTotalSignal>1e7]
+data_min2_msnT[, n_pep_QC1 := ifelse(length(which(QC_thr1))>=2, length(which(QC_thr1)), 2L), by = c("sample", "protein")]
+data_min2_msnT[, n_pep_QC2 := ifelse(length(which(QC_thr2))>=2, length(which(QC_thr2)), 2L), by = c("sample", "protein")]
+data_min2_msnT[, QC_pep1 := (n_pep[1]:1) %in% (n_pep_QC1[1]:1), by = c("sample", "protein")]
+data_min2_msnT[, QC_pep2 := (n_pep[1]:1) %in% (n_pep_QC2[1]:1), by = c("sample", "protein")]
+data_min2_msnT[, change := n_pep_QC2<n_pep]
+
+prot_min2_msnT <- rbind(data_min2_msnT[, .(type = "all proteins", ratio = median(ratio_20_m), CV = sd(ratio_20_m)/mean(ratio_20_m),
+                                           n_pep = n_pep[1], n_pep_QC = NA), keyby = c("sample", "condition", "protein")],
+                        data_min2_msnT[change==T, .(type = ">0", ratio = median(ratio_20_m), CV = sd(ratio_20_m)/mean(ratio_20_m),
+                                           n_pep = n_pep[1], n_pep_QC = NA), keyby = c("sample", "condition", "protein")],
+                        data_min2_msnT[change==T, .(type = ">1e6", ratio = median(ratio_20_m[QC_pep1==T]),
+                                           CV = sd(ratio_20_m[QC_pep1==T])/mean(ratio_20_m[QC_pep1==T]),
+                                           n_pep = n_pep[1], n_pep_QC = n_pep_QC1[1]), keyby = c("sample", "condition", "protein")],
+                        data_min2_msnT[change==T, .(type = ">1e7", ratio = median(ratio_20_m[QC_pep2==T]),
+                                           CV = sd(ratio_20_m[QC_pep2==T])/mean(ratio_20_m[QC_pep2==T]),
+                                           n_pep = n_pep[1], n_pep_QC = n_pep_QC2[1]), keyby = c("sample", "condition", "protein")])
+prot_min2_msnT[, type := factor(type, levels = c("all proteins", ">0", ">1e6", ">1e7"))]
+
+lab <- prot_min2_msnT[, .(N = .N, y = quantile(ratio, na.rm=T)["75%"]), keyby = c("condition", "type")]
+p_min2_ratio_msnTotalSignal <- ggplot(prot_min2_msnT[], aes(x=condition, y=ratio, fill=type)) +
+  geom_boxplot(outlier.alpha = 0.2, color = "grey", lwd=0.5, fatten=1) +
+  geom_text(data=lab, aes(x=condition, y=y*1.2, label=N), position = position_dodge(0.75), size = 3) +
+  xlab("") + ylab("protein median ratio 20:1") + scale_fill_manual("msnTotalSignal", values = c("#FFFFFFFF", viridis(3, option = "B"))) +
+  theme_minimal_hgrid() + theme(legend.position = "top") + guides(fill = guide_legend(title.position="top"))
+
+lab <- prot_min2_msnT[, .(N = .N, y = quantile(CV, na.rm=T)["75%"]), keyby = c("condition", "type")]
+p_min2_CV_msnTotalSignal <- ggplot(prot_min2_msnT[], aes(x=condition, y=CV, fill=type)) +
+  geom_boxplot(outlier.alpha = 0.2, color = "grey", lwd=0.5, fatten=1) +
+  geom_text(data=lab, aes(x=condition, y=y+c(0.3,0.2,0.15,0.1), label=N), position = position_dodge(0.75), size = 3) +
+  xlab("") + ylab("protein CV 20:1") + scale_fill_manual("msnTotalSignal", values = c("#FFFFFFFF", viridis(3, option = "B"))) +
+  theme_minimal_hgrid() + theme_yaxis_percentage + theme(legend.position = "bottom") + guides(fill = guide_legend(title.position="top"))
+
+
+
+# == peptideTopXIntensityFromTotalScore ==
+data_min2_ptoX <- data_COy[n_pep>=2, .SD, keyby = c("sample", "protein", "peptideTopXIntensityFromTotalScore")]
+
+data_min2_ptoX[, QC_thr1 := peptideTopXIntensityFromTotalScore>0.15]
+data_min2_ptoX[, QC_thr2 := peptideTopXIntensityFromTotalScore>0.3]
+data_min2_ptoX[, n_pep_QC1 := ifelse(length(which(QC_thr1))>=2, length(which(QC_thr1)), 2L), by = c("sample", "protein")]
+data_min2_ptoX[, n_pep_QC2 := ifelse(length(which(QC_thr2))>=2, length(which(QC_thr2)), 2L), by = c("sample", "protein")]
+data_min2_ptoX[, QC_pep1 := (n_pep[1]:1) %in% (n_pep_QC1[1]:1), by = c("sample", "protein")]
+data_min2_ptoX[, QC_pep2 := (n_pep[1]:1) %in% (n_pep_QC2[1]:1), by = c("sample", "protein")]
+data_min2_ptoX[, change := n_pep_QC2<n_pep]
+
+prot_min2_ptoX <- rbind(data_min2_ptoX[, .(type = "all proteins", ratio = median(ratio_20_m), CV = sd(ratio_20_m)/mean(ratio_20_m),
+                                           n_pep = n_pep[1], n_pep_QC = NA), keyby = c("sample", "condition", "protein")],
+                        data_min2_ptoX[change==T, .(type = ">0", ratio = median(ratio_20_m), CV = sd(ratio_20_m)/mean(ratio_20_m),
+                                           n_pep = n_pep[1], n_pep_QC = NA), keyby = c("sample", "condition", "protein")],
+                        data_min2_ptoX[change==T, .(type = ">0.15", ratio = median(ratio_20_m[QC_pep1==T]),
+                                           CV = sd(ratio_20_m[QC_pep1==T])/mean(ratio_20_m[QC_pep1==T]),
+                                           n_pep = n_pep[1], n_pep_QC = n_pep_QC1[1]), keyby = c("sample", "condition", "protein")],
+                        data_min2_ptoX[change==T, .(type = ">0.3", ratio = median(ratio_20_m[QC_pep2==T]),
+                                           CV = sd(ratio_20_m[QC_pep2==T])/mean(ratio_20_m[QC_pep2==T]),
+                                           n_pep = n_pep[1], n_pep_QC = n_pep_QC2[1]), keyby = c("sample", "condition", "protein")])
+prot_min2_ptoX[, type := factor(type, levels = c("all proteins", ">0", ">0.15", ">0.3"))]
+
+lab <- prot_min2_ptoX[, .(N = .N, y = quantile(ratio, na.rm=T)["75%"]), keyby = c("condition", "type")]
+p_min2_ratio_peptideTopXIntensityFromTotalScore <- ggplot(prot_min2_ptoX[], aes(x=condition, y=ratio, fill=type)) +
+  geom_boxplot(outlier.alpha = 0.2, color = "grey", lwd=0.5, fatten=1) +
+  geom_text(data=lab, aes(x=condition, y=y*1.2, label=N), position = position_dodge(0.75), size = 3) +
+  xlab("") + ylab("protein median ratio 20:1") +
+  scale_fill_manual("peptideTopXIntensityFromTotalScore", values = c("#FFFFFFFF", viridis(3, option = "B"))) +
+  theme_minimal_hgrid() + theme(legend.position = "top") + guides(fill = guide_legend(title.position="top"))
+
+lab <- prot_min2_ptoX[, .(N = .N, y = quantile(CV, na.rm=T)["75%"]), keyby = c("condition", "type")]
+p_min2_CV_peptideTopXIntensityFromTotalScore <- ggplot(prot_min2_ptoX[], aes(x=condition, y=CV, fill=type)) +
+  geom_boxplot(outlier.alpha = 0.2, color = "grey", lwd=0.5, fatten=1) +
+  geom_text(data=lab, aes(x=condition, y=y+c(0.3,0.2,0.15,0.1), label=N), position = position_dodge(0.75), size = 3) +
+  xlab("") + ylab("protein CV 20:1") +
+  scale_fill_manual("peptideTopXIntensityFromTotalScore", values = c("#FFFFFFFF", viridis(3, option = "B"))) +
+  theme_minimal_hgrid() + theme_yaxis_percentage + theme(legend.position = "bottom") + guides(fill = guide_legend(title.position="top"))
+
+
+
+# == peptideIntensityScore ==
+
+data_COy[!is.na(ratio_20_m), n_pep := .N, by = c("sample", "protein")]
+data_min2_pepI <- data_COy[n_pep>=2, .SD, keyby = c("sample", "protein", "peptideIntensityScore")]
+
+data_min2_pepI[, QC_thr1 := peptideIntensityScore>0.25]
+data_min2_pepI[, QC_thr2 := peptideIntensityScore>0.5]
+data_min2_pepI[, n_pep_QC1 := ifelse(length(which(QC_thr1))>=2, length(which(QC_thr1)), 2L), by = c("sample", "protein")]
+data_min2_pepI[, n_pep_QC2 := ifelse(length(which(QC_thr2))>=2, length(which(QC_thr2)), 2L), by = c("sample", "protein")]
+data_min2_pepI[, QC_pep1 := (n_pep[1]:1) %in% (n_pep_QC1[1]:1), by = c("sample", "protein")]
+data_min2_pepI[, QC_pep2 := (n_pep[1]:1) %in% (n_pep_QC2[1]:1), by = c("sample", "protein")]
+data_min2_pepI[, change := n_pep_QC2<n_pep]
+
+prot_min2_pepI <- rbind(data_min2_pepI[, .(type = "all proteins", ratio = median(ratio_20_m), CV = sd(ratio_20_m)/mean(ratio_20_m),
+                                           n_pep = n_pep[1], n_pep_QC = NA), keyby = c("sample", "condition", "protein")],
+                        data_min2_pepI[change==T, .(type = ">0", ratio = median(ratio_20_m), CV = sd(ratio_20_m)/mean(ratio_20_m),
+                                           n_pep = n_pep[1], n_pep_QC = NA), keyby = c("sample", "condition", "protein")],
+                        data_min2_pepI[change==T, .(type = ">0.25", ratio = median(ratio_20_m[QC_pep1==T]),
+                                           CV = sd(ratio_20_m[QC_pep1==T])/mean(ratio_20_m[QC_pep1==T]),
+                                           n_pep = n_pep[1], n_pep_QC = n_pep_QC1[1]), keyby = c("sample", "condition", "protein")],
+                        data_min2_pepI[change==T, .(type = ">0.5", ratio = median(ratio_20_m[QC_pep2==T]),
+                                           CV = sd(ratio_20_m[QC_pep2==T])/mean(ratio_20_m[QC_pep2==T]),
+                                           n_pep = n_pep[1], n_pep_QC = n_pep_QC2[1]), keyby = c("sample", "condition", "protein")])
+prot_min2_pepI[, type := factor(type, levels = c("all proteins", ">0", ">0.25", ">0.5"))]
+
+lab <- prot_min2_pepI[, .(N = .N, y = quantile(ratio, na.rm=T)["75%"]), keyby = c("condition", "type")]
+p_min2_ratio_peptideIntensityScore <- ggplot(prot_min2_pepI[], aes(x=condition, y=ratio, fill=type)) +
+  geom_boxplot(outlier.alpha = 0.2, color = "grey", lwd=0.5, fatten=1) +
+  geom_text(data=lab, aes(x=condition, y=y*1.2, label=N), position = position_dodge(0.75), size = 3) +
+  xlab("") + ylab("protein median ratio 20:1") +
+  scale_fill_manual("peptideIntensityScore", values = c("#FFFFFFFF", viridis(3, option = "B"))) +
+  theme_minimal_hgrid() + theme(legend.position = "top") + guides(fill = guide_legend(title.position="top"))
+
+lab <- prot_min2_pepI[, .(N = .N, y = quantile(CV, na.rm=T)["75%"]), keyby = c("condition", "type")]
+p_min2_CV_peptideIntensityScore <- ggplot(prot_min2_pepI[], aes(x=condition, y=CV, fill=type)) +
+  geom_boxplot(outlier.alpha = 0.2, color = "grey", lwd=0.5, fatten=1) +
+  geom_text(data=lab, aes(x=condition, y=y+c(0.3,0.2,0.15,0.1), label=N), position = position_dodge(0.75), size = 3) +
+  xlab("") + ylab("protein CV 20:1") + scale_fill_manual("peptideIntensityScore", values = c("#FFFFFFFF", viridis(3, option = "B"))) +
+  theme_minimal_hgrid() + theme_yaxis_percentage + theme(legend.position = "bottom") + guides(fill = guide_legend(title.position="top"))
+
+
+
+
+
+
+# == Controls: random score distributions ==
+set.seed(123)
+data_COy[, random_score := runif(.N)]
+data_min2_rndm <- data_COy[n_pep>=2, .SD, keyby = c("sample", "protein", "random_score")]
+
+data_min2_rndm[, QC_thr1 := random_score>0.5]
+data_min2_rndm[, QC_thr2 := random_score>0.75]
+data_min2_rndm[, n_pep_QC1 := ifelse(length(which(QC_thr1))>=2, length(which(QC_thr1)), 2L), by = c("sample", "protein")]
+data_min2_rndm[, n_pep_QC2 := ifelse(length(which(QC_thr2))>=2, length(which(QC_thr2)), 2L), by = c("sample", "protein")]
+data_min2_rndm[, QC_pep1 := (n_pep[1]:1) %in% (n_pep_QC1[1]:1), by = c("sample", "protein")]
+data_min2_rndm[, QC_pep2 := (n_pep[1]:1) %in% (n_pep_QC2[1]:1), by = c("sample", "protein")]
+data_min2_rndm[, change := n_pep_QC2<n_pep]
+
+prot_min2_rndm <- rbind(data_min2_rndm[, .(type = "all proteins", ratio = median(ratio_20_m), CV = sd(ratio_20_m)/mean(ratio_20_m),
+                                           n_pep = n_pep[1], n_pep_QC = NA), keyby = c("sample", "condition", "protein")],
+                        data_min2_rndm[change==T, .(type = ">0", ratio = median(ratio_20_m), CV = sd(ratio_20_m)/mean(ratio_20_m),
+                                           n_pep = n_pep[1], n_pep_QC = NA), keyby = c("sample", "condition", "protein")],
+                        data_min2_rndm[change==T, .(type = ">0.5", ratio = median(ratio_20_m[QC_pep1==T]),
+                                           CV = sd(ratio_20_m[QC_pep1==T])/mean(ratio_20_m[QC_pep1==T]),
+                                           n_pep = n_pep[1], n_pep_QC = n_pep_QC1[1]), keyby = c("sample", "condition", "protein")],
+                        data_min2_rndm[change==T, .(type = ">0.75", ratio = median(ratio_20_m[QC_pep2==T]),
+                                           CV = sd(ratio_20_m[QC_pep2==T])/mean(ratio_20_m[QC_pep2==T]),
+                                           n_pep = n_pep[1], n_pep_QC = n_pep_QC2[1]), keyby = c("sample", "condition", "protein")])
+prot_min2_rndm[, type := factor(type, levels = c("all proteins", ">0", ">0.5", ">0.75"))]
+
+lab <- prot_min2_rndm[, .(N = .N, y = quantile(ratio, na.rm=T)["75%"]), keyby = c("condition", "type")]
+p_min2_ratio_random_score <- ggplot(prot_min2_rndm[], aes(x=condition, y=ratio, fill=type)) +
+  geom_boxplot(outlier.alpha = 0.2, color = "grey", lwd=0.5, fatten=1) +
+  geom_text(data=lab, aes(x=condition, y=y*1.2, label=N), position = position_dodge(0.75), size = 3) +
+  xlab("") + ylab("protein median ratio 20:1") +
+  scale_fill_manual("random_score", values = c("#FFFFFFFF", viridis(3, option = "B"))) +
+  theme_minimal_hgrid() + theme(legend.position = "top") + guides(fill = guide_legend(title.position="top"))
+
+lab <- prot_min2_rndm[, .(N = .N, y = quantile(CV, na.rm=T)["75%"]), keyby = c("condition", "type")]
+p_min2_CV_random_score <- ggplot(prot_min2_rndm[], aes(x=condition, y=CV, fill=type)) +
+  geom_boxplot(outlier.alpha = 0.2, color = "grey", lwd=0.5, fatten=1) +
+  geom_text(data=lab, aes(x=condition, y=y+c(0.3,0.2,0.15,0.1), label=N), position = position_dodge(0.75), size = 3) +
+  xlab("") + ylab("protein CV 20:1") +
+  scale_fill_manual("random_score", values = c("#FFFFFFFF", viridis(3, option = "B"))) +
+  theme_minimal_hgrid() + theme_yaxis_percentage + theme(legend.position = "top") + guides(fill = guide_legend(title.position="top"))
+
+```
+
+### Figure 4
+
+```{r fig_4, fig.width=15, fig.height=15}
+
+# ##Fig 4: HYpro16 MS2/3 filter options (IQ vs FP / MQ) - wide version
+# p_fig4b <- plot_grid(p_ratio_cor_msnTotalSignal_log10, p_pep_ratio_msnTotalSignal_log10,
+#                      p_min2_CV_msnTotalSignal,
+#                      p_ratio_cor_peptideIntensityScore, p_pep_ratio_peptideIntensityScore,
+#                      p_min2_CV_peptideIntensityScore,
+#                      p_ratio_cor_peptideTopXIntensityFromTotalScore, p_pep_ratio_peptideTopXIntensityFromTotalScore,
+#                      p_min2_CV_peptideTopXIntensityFromTotalScore,
+#                      labels = LETTERS[3:5], ncol = 3, align = "v", axis = "lr")
+# p_fig4a <- plot_grid(p_point_slope + theme(legend.position = "none"), p_point_slope_legend, p_ratio_density_ms1PrecSIgnal_1, labels = c("A", "", "B"), rel_heights = c(1.9, 0.1, 1), ncol = 1)
+# plot_grid(p_fig4a, p_fig4b, rel_widths = c(1, 3))
+# ggsave2("figures/fig_4.pdf", width = 20, height = 10)
+
+##Fig 4: HYpro16 MS2/3 filter options (IQ vs FP / MQ)
+p_fig4b <- plot_grid(p_ratio_cor_msnTotalSignal_log10, p_pep_ratio_msnTotalSignal_log10,
+                     p_ratio_cor_peptideIntensityScore, p_pep_ratio_peptideIntensityScore,
+                     p_ratio_cor_peptideTopXIntensityFromTotalScore, p_pep_ratio_peptideTopXIntensityFromTotalScore,
+                     labels = c("C", "D"), ncol = 2)
+p_fig4l <- plot_grid(NULL, p_point_slope_legend, nrow = 1, rel_widths = c(0.1, 0.9))
+p_fig4a <- plot_grid(p_fig4l, p_point_slope + theme(legend.position = "none"), p_ratio_density_ms1PrecSIgnal_1,
+                     labels = c("A", "", "B"), rel_heights = c(0.2, 1.8, 1), ncol = 1)
+p_fig4ab <- plot_grid(p_fig4a, p_fig4b, rel_widths = c(1, 2))
+p_fig4c <- plot_grid(p_min2_CV_msnTotalSignal, p_min2_CV_peptideIntensityScore, p_min2_CV_peptideTopXIntensityFromTotalScore,
+                     nrow = 1, labels = c("E"), align = "h", axis = "tb")
+plot_grid(p_fig4ab, p_fig4c, rel_heights = c(3, 1), nrow = 2)
+ggsave2("figures/fig_4.pdf", width = 15, height = 15)
+
+```
+
+### Figure S6
+
+```{r fig_S6, fig.width=15, fig.height=10}
+
+#protein-level accuracy and randomized score control
+plot_grid(p_min2_ratio_msnTotalSignal, p_min2_ratio_peptideIntensityScore, p_min2_ratio_peptideTopXIntensityFromTotalScore,
+                        p_min2_ratio_random_score, p_min2_CV_random_score,
+                        labels = LETTERS[1:5], ncol = 3)
+ggsave2("figures/fig_S6.pdf", width = 15, height = 10)
+
+```
+
+
+# Read FragPipe wide format
+
+FragPipe psm.tsv files are read and arranged in wide format.
+
+```{r load_FP_wide}
+
+#load tsv report files
+data_FP <- rbind(fread("data/FragPipe_psm_MS3.tsv"), fread("data/FragPipe_psm_MS2.tsv"))
+sample_dil_val0 <- c("empty-01", string_combine(list( c("1to20", "1to10", "1to4", "1to2", "1to1"), paste0(0L, 1:3L) ), "-"))
+
+#keep wide data table
+data_FPw <- copy(data_FP)
+setnames(data_FPw, sample_dil_val0, sample_dil_val)
+
+data_FPw[, sample := factor(gsub("^[^_]*_([^_]*_.).*$", "\\1", Spectrum), levels = cond_val)]
+data_FPw[, condition := factor(gsub("^(.*)_.$", "\\1", sample), levels = cond_met_val_old, labels = cond_met_val)]
+data_FPw[, replicate := factor(gsub("^.*_(.)$", "\\1", sample), levels = 1L:3L)]
+data_FPw[, raw := gsub("^([^\\.]*)\\..*$", "\\1", Spectrum)]
+data_FPw[, raw_file := factor(raw, levels = unique(sort(raw)), labels = 1:length(unique(raw)))]
+
+data_FPw[, reverse := F]
+data_FPw[, gene := Gene]
+data_FPw[, protein := gsub("^[^\\|]*\\|([^\\|]*)\\|[^\\|]*$", "\\1", Protein)]
+data_FPw[`Mapped Proteins`=="", protein_merged := Protein]
+data_FPw[`Mapped Proteins`!="", protein_merged := paste0(Protein, ", ", `Mapped Proteins`)]
+data_FPw[, protein_split := sapply(protein_merged, function(x) strsplit(x, ", ", fixed=T) )]
+data_FPw[, proteins := lapply(protein_split, function(x) gsub("^[^\\|]*\\|([^\\|]*)\\|[^\\|]*$", "\\1", x) )]
+data_FPw[, organism := sapply(protein_split, function(x) dcast_unique_sort(gsub("^[^\\|]*\\|[^\\|]*\\|[^\\|]*_(.*)$", "\\1", x)) )]
+data_FPw[!organism %in% c("HUMAN", "YEAST", "HUMAN;YEAST"), organism := "OTHER"]
+data_FPw[, peptide_mod := peptide_gsub(`Modified Peptide`, input = "FP")]
+data_FPw[`Modified Peptide`=="", peptide_mod := Peptide]
+data_FPw[, peptide_seq := Peptide]
+data_FPw[, peptide_z := paste0(peptide_mod, "_", Charge)]
+data_FPw[, charge := Charge]
+data_FPw[, mz_ratio := `Observed M/Z`]
+data_FPw[, intensity_MS1 := Intensity]
+data_FPw[, score := Hyperscore]
+data_FPw[, qscore := Purity]
+data_FPw[, scan_ms2 := as.integer(gsub("^[^_]*_[^_]*_.\\.([^\\.]*)\\..*$", "\\1", Spectrum))]
+
+data_FPw <- data_FPw[, .SD, .SDcols = c("raw", "sample", "condition", "replicate", "raw_file", "reverse",
+                                        "gene", "protein", "proteins", "organism", "peptide_mod", "peptide_seq", "peptide_z",
+                                        "charge", "mz_ratio", sample_dil_val, "intensity_MS1", "score", "qscore", "scan_ms2")]
+setkey(data_FPw, sample, peptide_z)
+
+#check intensity for validity, and set 0 to NA
+for (j in which(names(data_FPw) %in% sample_dil_val))
+  set(data_FPw,which(data_FPw[[j]]==0),j,NA)
+#log10 transform intensity, 
+data_FPw[, (sample_dil_val) := log10(.SD), .SDcols = sample_dil_val]
+
+data_FPw <- copy(data_FPw)
+setkey(data_FPw, sample, peptide_z)
+
+```
+
+
+# Read FragPipe long format
+
+FragPipe psm.tsv files are arranged in tidy format.
+
+```{r load_FP_long}
+
+#for tidy table: melt
+data_FP <- melt(data_FP, measure.vars = sample_dil_val0, variable.name = "sample", value.name = "intensity")
+
+#parse columns and create conditions
+data_FP[, sample_met := factor(gsub("^[^_]*_([^_]*_.).*$", "\\1", Spectrum), levels = cond_val)]
+data_FP[, sample_dil := factor(sample, levels = sample_dil_val0, labels = sample_dil_val)]
+data_FP[, sample := factor(paste0(sample_met, "_", sample_dil), levels = sample_val)]
+data_FP[, condition := factor(gsub("^(.*_.*)_.*_.$", "\\1", sample), levels = cond_val)]
+data_FP[, cond_met := factor(gsub("^(.*)_.*_.*_.$", "\\1", sample), levels = cond_met_val_old, labels = cond_met_val)]
+data_FP[, cond_dil := factor(gsub("^.*_._(.*_.)$", "\\1", sample), levels = sample_dil_val)]
+data_FP[, replicate := factor(gsub("^.*_(.)$", "\\1", sample), levels = 1L:3L)]
+data_FP[, rep_met := factor(gsub("^.*_(.)_.*_.$", "\\1", sample), levels = 1L:3L)]
+data_FP[, raw := gsub("^([^\\.]*)\\..*$", "\\1", Spectrum)]
+data_FP[, raw_file := factor(raw, levels = unique(sort(raw)), labels = 1:length(unique(raw)))]
+data_FP[, reverse := F]
+data_FP[, gene := Gene]
+data_FP[, protein := gsub("^[^\\|]*\\|([^\\|]*)\\|[^\\|]*$", "\\1", Protein)]
+data_FP[`Mapped Proteins`=="", protein_merged := Protein]
+data_FP[`Mapped Proteins`!="", protein_merged := paste0(Protein, ", ", `Mapped Proteins`)]
+data_FP[, protein_split := sapply(protein_merged, function(x) strsplit(x, ", ", fixed=T) )]
+data_FP[, proteins := lapply(protein_split, function(x) gsub("^[^\\|]*\\|([^\\|]*)\\|[^\\|]*$", "\\1", x) )]
+data_FP[, organism := sapply(protein_split, function(x) dcast_unique_sort(gsub("^[^\\|]*\\|[^\\|]*\\|[^\\|]*_(.*)$", "\\1", x)) )]
+data_FP[!organism %in% c("HUMAN", "YEAST", "HUMAN;YEAST"), organism := "OTHER"]
+data_FP[, peptide_mod := peptide_gsub(`Modified Peptide`, input = "FP")]
+data_FP[`Modified Peptide`=="", peptide_mod := Peptide]
+data_FP[, peptide_seq := Peptide]
+data_FP[, peptide_z := paste0(peptide_mod, "_", Charge)]
+data_FP[, charge := Charge]
+data_FP[, mz_ratio := `Observed M/Z`]
+data_FP[, intensity := intensity]
+data_FP[, intensity_MS1 := Intensity]
+data_FP[, score := Hyperscore]
+data_FP[, qscore := Purity]
+data_FP[, scan_ms2 := as.integer(gsub("^[^_]*_[^_]*_.\\.([^\\.]*)\\..*$", "\\1", Spectrum))]
+
+data_FP <- data_FP[, .(sample, condition, cond_met, cond_dil, replicate, rep_met, raw_file, reverse,
+                 gene, protein, proteins, organism, peptide_mod, peptide_seq, peptide_z,
+                 charge, mz_ratio, intensity, intensity_MS1, score, qscore, scan_ms2)]
+
+#check intensity for validity, and set 0 to NA
+data_FP[, check_nonval(intensity)]
+data_FP[intensity==0 | intensity==1, intensity := NA]
+#log10 transform intensity, 
+data_FP[, intensity := log10(intensity)]
+
+data_FP <- copy(data_FP)
+setkey(data_FP, sample, peptide_z)
+
+```
+
+# Read MaxQuant msms.txt
+
+MaxQuant v2.0.3.1 at the time of submission had a bug in processing MS3-level TMTpro data, which is being fixed in an upcoming release. But for this script, MS3-level quant data is provided, but excluded due to vastly inaccurate quantification.
+
+```{r load_MQ}
+
+#load msms
+data_MQ <- rbind(fread("data/MaxQuant_msms_MS3.txt"), fread("data/MaxQuant_msms_MS2.txt"))
+
+#need to delete all TMT reporter ion columns, because not filled for MS3-based TMTpro
+data_MQ[, grep("^Reporter (intensity|mass)", names(data_MQ), value=T) := NULL]
+
+
+#load msmsScans for mapping TMT reporter intensities
+data_MQ_TMT <- rbind(fread("data/MaxQuant_msmsScans_MS3.txt"), fread("data/MaxQuant_msmsScans_MS2.txt"))
+
+#map TMT reporter ion columns onto msms
+tmt_old <- paste0("Reporter intensity ", 1:16 )
+
+data_MQ <- merge(x=data_MQ, y=data_MQ_TMT[, .SD, .SDcols = c("Raw file", "Scan number", tmt_old)],
+                 by = c("Raw file", "Scan number"), all.x=T, all.y=F)
+
+#melt TMT evidence into tidy table
+data_MQ <- melt(data_MQ, measure.vars = tmt_old, variable.name = "sample", value.name = "intensity")
+
+#parse columns and create conditions
+data_MQ[, sample_met := factor(gsub("^[^_]*_([^_]*_.)*$", "\\1", `Raw file`), levels = cond_val)]
+data_MQ[, cond_dil := factor(sample, levels = tmt_old, labels = sample_dil_val)]
+data_MQ[, sample := factor(paste0(sample_met, "_", cond_dil), levels = sample_val)]
+data_MQ[, condition := factor(gsub("^(.*_.*)_.*_.$", "\\1", sample), levels = cond_val)]
+data_MQ[, cond_met := factor(gsub("^(.*)_.*_.*_.$", "\\1", sample), levels = cond_met_val_old, labels = cond_met_val)]
+data_MQ[, replicate := factor(gsub("^.*_(.)$", "\\1", sample), levels = 1L:3L)]
+data_MQ[, rep_met := factor(gsub("^.*_(.)_.*_.$", "\\1", sample), levels = 1L:3L)]
+data_MQ[, raw_file := factor(`Raw file`, levels = unique(sort(`Raw file`)), labels = 1:length(unique(`Raw file`)))]
+
+data_MQ[, reverse := Reverse]
+data_MQ[, gene := character()]
+data_MQ[, proteins := Proteins]
+data_MQ[, protein := gsub("^([^;]*);.*$", "\\1", Proteins)]
+
+data_MQ[, peptide_mod := peptide_gsub(gsub("^_(.*)_$", "\\1", `Modified sequence`), "MQ")]
+data_MQ[, peptide_seq := Sequence]
+data_MQ[, peptide_z := paste0(peptide_mod, "_", Charge)]
+data_MQ[, charge := Charge]
+data_MQ[, mz_ratio := `m/z`]
+data_MQ[, intensity_MS1 := numeric()]
+data_MQ[, score := Score]
+data_MQ[, qscore := PIF]
+data_MQ[, scan_ms2 := `Scan number`]
+data_MQ <- data_MQ[, .(sample, sample_met, condition, cond_met, cond_dil, replicate, rep_met, raw_file, reverse,
+                 gene, protein, proteins, peptide_mod, peptide_seq, peptide_z,
+                 charge, mz_ratio, intensity, intensity_MS1,
+                 score, qscore, scan_ms2)]
+setkey(data_MQ, sample, peptide_z)
+
+#map organism onto data
+org <- fread("data/yeast_human_organism_mapping.csv")
+org[organism=="yeast", organism := "YEAST"]
+org[organism=="human", organism := "HUMAN"]
+data_MQ <- merge(data_MQ, org, by = "protein", all.x=T, all.y=F)
+data_MQ[is.na(organism), organism := "OTHER"]
+
+#filter reverse hits
+data_MQ <- data_MQ[!reverse=="+"]
+
+#check intensity for validity, and set 0 to NA
+data_MQ[, check_nonval(intensity)]
+data_MQ[intensity==0 | intensity==1, intensity := NA]
+#log10 transform intensity, 
+data_MQ[, intensity := log10(intensity)]
+
+data_MQ <- copy(data_MQ)
+setkey(data_MQ, sample, peptide_z)
+
+```
+
+
+# Software comparison
+
+The Comet-Mokapot-IsobaricQuant pipeline is compared with FragPipe (MS2- and MS3-readout) as well as MaxQuant (MS2-readout).
+
+## Number of quantifications
+
+This code block generates the number of quantified peptide charge state observations per software tool (Fig 2 and S1).
+
+```{r quant_numbers}
+
+#Goal: how many quantified spectra per sample with any number of TMT reporter ions?
+count_spectra_CO <- data_CO[!is.na(intensity), .N, keyby = c("condition", "cond_met", "scan_ms2")
+                            ][, .(type="IQ", .N), keyby = c("condition", "cond_met")]
+count_spectra_FP <- data_FP[!is.na(intensity), .N, keyby = c("condition", "cond_met", "scan_ms2")
+                            ][, .(type="FP", .N), keyby = c("condition", "cond_met")]
+count_spectra_MQ <- data_MQ[!is.na(intensity), .N, keyby = c("condition", "cond_met", "scan_ms2")
+                            ][, .(type="MQ", .N), keyby = c("condition", "cond_met")]
+count_spectra <- rbind(count_spectra_CO, count_spectra_FP, count_spectra_MQ[cond_met %in% "MS2"])
+count_spectra[, type := factor(type, levels = cond_qua_val)]
+count_spectra[, cond_met := factor(cond_met, levels = cond_met_val)]
+
+p_nr_quants <- ggplot(count_spectra, aes(x=cond_met, y=N, fill=type)) +
+  geom_bar(stat="summary", fun="mean", position="dodge", alpha=0.5) +
+  geom_point(position = position_dodge(width = 0.9), shape=1L) +
+  scale_fill_manual("", values = cond_qua_col) +
+  xlab("") + ylab("quantified scan groups") +
+  theme_minimal_hgrid()
+
+
+#Goal: distribution of % TMT reporters per spectra? separated by organism
+count_nr_TMT <-
+  rbind(data_FP[!is.na(intensity) & organism!="OTHER", .N, keyby = c("condition", "cond_met", "organism", "scan_ms2")][, .(type="FP", quant_rel = .SD[N==16, .N]/.N), keyby = c("condition", "cond_met", "organism")],
+        data_CO[!is.na(intensity) & organism!="OTHER", .N, keyby = c("condition", "cond_met", "organism", "scan_ms2")][, .(type="IQ", quant_rel = .SD[N==16, .N]/.N), keyby = c("condition", "cond_met", "organism")],
+        data_MQ[!is.na(intensity) & organism!="OTHER" & cond_met %in% "MS2", .N, keyby = c("condition", "cond_met", "organism", "scan_ms2")][, .(type="MQ", quant_rel = .SD[N==16, .N]/.N), keyby = c("condition", "cond_met", "organism")])
+count_nr_TMT[, type := factor(type, levels = cond_qua_val)]
+count_nr_TMT[, cond_met := factor(cond_met, levels = cond_met_val)]
+
+p_frc_full_quant <- ggplot(count_nr_TMT, aes(x=cond_met, y=quant_rel, fill=type)) +
+  geom_bar(stat="summary", fun="mean", position="dodge", alpha=0.5) +
+  geom_point(position = position_dodge(width = 0.9), shape=1L) +
+  scale_fill_manual("", values = cond_qua_col) +
+  xlab("") + ylab("scan groups with\nfull 16plex quantification") +
+  facet_grid(cols = vars(organism)) +
+  theme_minimal_hgrid() + theme_yaxis_percentage
+
+
+#Goal: distribution of % TMT reporters per channel? separated by organism
+count_nr_channel <-
+  rbind(data_FP[!is.na(intensity) & organism!="OTHER", .(.N, type = "FP"), keyby = c("condition", "cond_met", "organism", "cond_dil")],
+        data_CO[!is.na(intensity) & organism!="OTHER", .(.N, type = "IQ"), keyby = c("condition", "cond_met", "organism", "cond_dil")],
+        data_MQ[!is.na(intensity) & organism!="OTHER" & cond_met %in% "MS2", .(.N, type = "MQ"), keyby = c("condition", "cond_met", "organism", "cond_dil")])
+count_nr_channel[, type := factor(type, levels = cond_qua_val)]
+count_nr_channel[, cond_met := factor(cond_met, levels = cond_met_val)]
+count_nr_channel[, cond_dil := factor(cond_dil, levels = sample_dil_val)]
+
+p_frc_channel_quant <- ggplot(count_nr_channel[organism=="YEAST"], aes(x=cond_dil, y=N, fill=type)) +
+  geom_bar(stat="summary", fun="mean", position="dodge", alpha=0.5) +
+  geom_point(position = position_dodge(width = 0.9), shape=1L) +
+  scale_fill_manual("", values = cond_qua_col) +
+  xlab("") + ylab("number of quantified channels\nper yeast scan group") +
+  facet_grid(cols = vars(cond_met)) + theme_minimal_hgrid() + theme_tilt_xaxis(90, T)
+
+
+
+
+#Goal: distribution of % TMT reporters per spectra? YEAST both only
+data_yeast_scans <- rbind(data_CO[organism=="YEAST", .(type="IQ", sample, cond_met, scan_ms2)],
+                          data_FP[organism=="YEAST", .(type="FP", sample, cond_met, scan_ms2)],
+                          data_MQ[organism=="YEAST" & cond_met %in% "MS2", .(type="MQ", sample, cond_met, scan_ms2)])
+
+data_yeast_scans <- rbind(data_yeast_scans[cond_met %in% c("MS2"), .N, by = c("sample", "scan_ms2")][N==3, .(sample, scan_ms2, yeast=T)],
+                          data_yeast_scans[cond_met %in% cond_met_val[2:3], .N, by = c("sample", "scan_ms2")][N==2, .(sample, scan_ms2, yeast=T)])
+setkey(data_yeast_scans, sample, scan_ms2)
+
+data_FPy <- merge(x=data_FP, y=data_yeast_scans, by=c("sample", "scan_ms2"))
+data_COy <- merge(x=data_CO, y=data_yeast_scans, by=c("sample", "scan_ms2"))
+data_MQy <- merge(x=data_MQ[cond_met %in% "MS2"], y=data_yeast_scans, by=c("sample", "scan_ms2"))
+
+count_nr_TMTy <-
+  rbind(data_FPy[!is.na(intensity), .N, keyby = c("condition", "cond_met", "scan_ms2")][, .(type="FP", quant_rel = .SD[N==16, .N]/.N), keyby = c("condition", "cond_met")],
+        data_COy[!is.na(intensity), .N, keyby = c("condition", "cond_met", "scan_ms2")][, .(type="IQ", quant_rel = .SD[N==16, .N]/.N), keyby = c("condition", "cond_met")],
+        data_MQy[!is.na(intensity), .N, keyby = c("condition", "cond_met", "scan_ms2")][, .(type="MQ", quant_rel = .SD[N==16, .N]/.N), keyby = c("condition", "cond_met")])
+count_nr_TMTy[, type := factor(type, levels = cond_qua_val)]
+count_nr_TMTy[, cond_met := factor(cond_met, levels = cond_met_val)]
+
+p_frc_full_quant_yeast <- ggplot(count_nr_TMTy, aes(x=cond_met, y=quant_rel, fill=type)) +
+  geom_bar(stat="summary", fun="mean", position="dodge", alpha=0.5) +
+  geom_point(position = position_dodge(width = 0.9), shape=1L) +
+  scale_fill_manual("", values = cond_qua_col) +
+  xlab("") + ylab("\nshared yeast scan groups\nwith full 16plex quantification") +
+  theme_minimal_hgrid() + theme_yaxis_percentage
+
+```
+
+### Figure S1
+
+```{r fig_S1, fig.width=15, fig.height=10}
+
+#number of quantified scan groups with full 16plex
+#number of quantified yeast channels
+plot_grid(p_frc_full_quant, p_frc_channel_quant, labels = "AUTO", ncol = 1, align = "v", axis = "lr")
+ggsave2("figures/fig_S1.pdf", width = 15, height = 10)
+
+```
+
+
+## Quant correlation
+
+This code block generates correlations of quantified channel intensities per software tool (Fig 2 and S2).
+
+```{r quant_cor}
+
+#Goal: quant correlation
+#merge datasets
+data_IQFP <- merge(x=data_CO[, .(sample, condition, cond_dil, scan_ms2, intensity)],
+                   y=data_FP[, .(sample, condition, cond_dil, scan_ms2, intensity)],
+                   by = c("sample", "condition", "cond_dil", "scan_ms2"))
+setnames(data_IQFP, c("intensity.x", "intensity.y"), c("int_IQ", "int_FP"))
+data_IQFP <- data_IQFP[!(is.na(int_IQ) & is.na(int_FP))]
+
+#calculate correlations
+lab_IQFP <- data_IQFP[!is.na(int_IQ) & !is.na(int_FP), .(pearson = round(cor(int_IQ, int_FP)^2, 6)), keyby = c("condition")]
+cor_IQPF <- data_IQFP[!is.na(int_IQ) & !is.na(int_FP), round(cor(int_IQ, int_FP)^2, 6)]
+
+p_IQ_FP_correlation_cond <- ggplot(data_IQFP, aes(x=int_IQ, y=int_FP)) +
+  stat_binhex(aes(fill=log10(..count..))) + geom_abline() +
+  geom_text(data=lab_IQFP, aes(x=2.2, y=7.5, label=paste0("R^2 = ", pearson)), hjust=0) +
+  facet_wrap(vars(condition)) + xlab("IQ log10 intensity") + ylab("FP log10 intensity") +
+  scale_fill_viridis("log10\ncounts") +
+  theme_minimal_grid()
+
+p_IQ_FP_correlation <- ggplot(data_IQFP, aes(x=int_IQ, y=int_FP)) +
+  stat_binhex(aes(fill=log10(..count..))) + geom_abline() +
+  annotate("text", x=2.2, y=7.5, label=paste0("R^2 = ", cor_IQPF), hjust=0) +
+  xlab("IQ log10 intensity") + ylab("FP log10 intensity") +
+  scale_fill_viridis("log10\ncounts") +
+  theme_minimal_grid()
+
+
+
+#merge datasets
+data_IQMQ <- merge(x=data_CO[cond_met %in% "MS2", .(sample, condition, cond_dil, scan_ms2, intensity)],
+                   y=data_MQ[cond_met %in% "MS2", .(sample, condition, cond_dil, scan_ms2, intensity)],
+                   by = c("sample", "condition", "cond_dil", "scan_ms2"))
+setnames(data_IQMQ, c("intensity.x", "intensity.y"), c("int_IQ", "int_MQ"))
+data_IQMQ <- data_IQMQ[!(is.na(int_IQ) & is.na(int_MQ))]
+
+#calculate correlations
+lab_IQMQ <- data_IQMQ[!is.na(int_IQ) & !is.na(int_MQ), .(pearson = round(cor(int_IQ, int_MQ)^2, 6)), keyby = c("condition")]
+cor_IQMQ <- data_IQMQ[!is.na(int_IQ) & !is.na(int_MQ), round(cor(int_IQ, int_MQ)^2, 6)]
+
+p_IQ_MQ_correlation_cond <- ggplot(data_IQMQ, aes(x=int_IQ, y=int_MQ)) +
+  stat_binhex(aes(fill=log10(..count..))) + geom_abline() +
+  geom_text(data=lab_IQMQ, aes(x=2.2, y=7.5, label=paste0("R^2 = ", pearson)), hjust=0) +
+  facet_wrap(vars(condition)) + xlab("IQ log10 intensity") + ylab("MQ log10 intensity") +
+  scale_fill_viridis("log10\ncounts") +
+  theme_minimal_grid()
+
+p_IQ_MQ_correlation <- ggplot(data_IQMQ, aes(x=int_IQ, y=int_MQ)) +
+  stat_binhex(aes(fill=log10(..count..))) + geom_abline() +
+  annotate("text", x=2.2, y=7.5, label=paste0("R^2 = ", cor_IQMQ), hjust=0) +
+  xlab("IQ log10 intensity") + ylab("MQ log10 intensity") +
+  scale_fill_viridis("log10\ncounts") +
+  theme_minimal_grid()
+
+```
+
+### Figure 2
+
+```{r fig_2, fig.width=10, fig.height=5}
+
+#number of quantified scan groups
+#yeast fraction of quants with full 16plex quantification
+#direct correlation of all quants (IQ vs FP)
+p_fig2a <- plot_grid(p_nr_quants, p_frc_full_quant_yeast, ncol = 1, labels = "AUTO", align = "v", axis = "lr")
+plot_grid(p_fig2a, p_IQ_FP_correlation, nrow = 1, labels = c("", "C"))
+ggsave2("figures/fig_2.pdf", width = 10, height = 5)
+
+```
+
+
+##Quant matches
+
+This code block calculates the fraction of matched TMTpro reporter intensities between software tools (Fig S2).
+
+```{r quant_matches}
+
+#Goal: bar plot showing fraction of hits matched
+data_IQFP <- merge(x=data_CO[, .(sample, condition, cond_met, cond_dil, scan_ms2, intensity)],
+                   y=data_FP[, .(sample, condition, cond_met, cond_dil, scan_ms2, intensity)],
+                   by = c("sample", "condition", "cond_met", "cond_dil", "scan_ms2"))
+setnames(data_IQFP, c("intensity.x", "intensity.y"), c("int_IQ", "int_FP"))
+data_IQFP <- data_IQFP[!is.na(int_IQ) & !is.na(int_FP)]
+
+data_IQFP[, int_match := round(int_IQ, 2)==round(int_FP, 2)]
+count_IQFP <- data_IQFP[, .(int_match = .SD[int_match==T, .N]/.N, type = "IQ vs FP"), keyby = c("condition", "cond_met")]
+
+data_IQMQ <- merge(x=data_CO[, .(sample, condition, cond_met, cond_dil, scan_ms2, intensity)],
+                   y=data_MQ[cond_met %in% "MS2", .(sample, condition, cond_met, cond_dil, scan_ms2, intensity)],
+                   by = c("sample", "condition", "cond_met", "cond_dil", "scan_ms2"))
+setnames(data_IQMQ, c("intensity.x", "intensity.y"), c("int_IQ", "int_MQ"))
+data_IQMQ <- data_IQMQ[!is.na(int_IQ) & !is.na(int_MQ)]
+
+data_IQMQ[, int_match := round(int_IQ, 2)==round(int_MQ, 2)]
+count_IQMQ <- data_IQMQ[, .(int_match = .SD[int_match==T, .N]/.N, type = "IQ vs MQ"), keyby = c("condition", "cond_met")]
+
+p_quant_match <- ggplot(rbind(count_IQFP, count_IQMQ), aes(x=cond_met, y=int_match, fill=type)) +
+  geom_bar(stat="summary", fun="mean", position="dodge", alpha=0.5) +
+  geom_point(position = position_dodge(width = 0.9), shape=1L) +
+  scale_fill_viridis_d("") + theme_yaxis_percentage +
+  xlab("") + ylab("intensities matching 2 digits") +
+  theme_minimal_hgrid()
+
+
+#Goal: bar plot showing fraction of hits matched per reporter channel
+count_IQFP_rep <- data_IQFP[, .(int_match = .SD[int_match==T, .N]/.N, type = "IQ vs FP"), keyby = c("condition", "cond_met", "cond_dil")]
+count_IQMQ_rep <- data_IQMQ[, .(int_match = .SD[int_match==T, .N]/.N, type = "IQ vs MQ"), keyby = c("condition", "cond_met", "cond_dil")]
+
+p_quant_match_rep <- ggplot(rbind(count_IQFP_rep, count_IQMQ_rep), aes(x=cond_dil, y=int_match, fill=type)) +
+  geom_bar(stat="summary", fun="mean", position="dodge", alpha=0.5) +
+  geom_point(position = position_dodge(width = 0.9), shape=1L) +
+  scale_fill_viridis_d("") + theme_yaxis_percentage +
+  facet_grid(cols = vars(cond_met)) +
+  xlab("") + ylab("intensities\nmatching 2 digits") +
+  theme_minimal_hgrid() + theme_tilt_xaxis(90, T)
+
+```
+
+### Figure S2
+
+```{r fig_S2, fig.width=15, fig.height=15}
+
+#all fractions of quants with full 16plex quantification
+#all quant correlations FP & MS2 quant correlations MQ
+#share of matching quants
+plot_grid(p_IQ_FP_correlation_cond, p_IQ_MQ_correlation_cond, p_quant_match_rep,
+          ncol = 1, labels = "AUTO", rel_heights = c(3,1,1), align = "v", axis = "lr")
+ggsave2("figures/fig_S2.pdf", width = 15, height = 15)
+
+```
+
+## QC correllations
+
+This code block generates plots that compare IsobaricQuant QC score ms1PrecSignalScore with FragPipe purity score (Fig S5).
+
+```{r qc_cor}
+
+#Goal: see correlation of IQ ms1PrecSIgnal vs FP purity
+#merge IQ and FP wide datasets
+data_IQFPw <- merge(x=data_COw[, .(sample, condition, scan_ms2, ms1PrecSIgnal, ratio_20_m)],
+                    y=data_FPw[, .(sample, condition, scan_ms2, qscore)],
+                    by = c("sample", "condition", "scan_ms2"))
+setnames(data_IQFPw, c("qscore"), c("purity"))
+data_IQFPw <- data_IQFPw[!(is.na(ms1PrecSIgnal) & is.na(purity))]
+
+p_ms1PrecSignal_vs_purity_cor <- ggplot(data_IQFPw[ms1PrecSIgnal!=1 & purity!=1], aes(x=ms1PrecSIgnal, y=purity)) +
+  stat_density_2d(geom = "polygon", aes(fill = after_stat(level))) + geom_abline(linetype="dashed") + facet_grid(cols = vars(condition)) +
+  scale_fill_viridis("density") + xlim(0.5,1.1) + ylim(0.6,1.05) +
+  xlab("IQ ms1PrecSIgnal (excluding =1)") + ylab("FQ purity (excluding =1)") + theme_minimal_grid()
+
+
+
+#Goal: how many scans have both parameters = 1 
+data_IQFPw[, ms1PrecSIgnal_1 := ifelse(ms1PrecSIgnal==1, T, F)]
+data_IQFPw[, purity_1 := ifelse(purity==1, T, F)]
+
+count_QC_par_1 <- data_IQFPw[, .N, keyby = c("condition", "ms1PrecSIgnal_1", "purity_1")]
+count_QC_par_1[, cond := paste0(as.integer(ms1PrecSIgnal_1), "_", as.integer(purity_1))]
+
+p_main <- ggplot(count_QC_par_1, aes(x=cond, y=N)) +
+  geom_bar(stat="identity") + xlab("") + ylab("ms2 scans") + facet_grid(cols = vars(condition)) +
+  theme_minimal_hgrid() + theme(axis.text.x=element_blank())
+
+upset_col <- c("ms1PrecSIgnal = 1", "purity = 1")
+count_QC_par_1[, (upset_col) := tstrsplit(cond, "_")]
+upset_dt <- melt(count_QC_par_1, measure.vars = upset_col)
+
+p_sub <- ggplot(upset_dt, aes(x=cond, y=variable, alpha=value)) +
+  geom_point(size=4) + facet_grid(cols = vars(condition)) +
+  scale_alpha_manual("ms1PrecSIgnal = 1", values = c("1" = 1, "0" = 0.1)) +
+  theme_void() + theme(legend.position = "none", axis.text.y = element_text(hjust=1), strip.text.x = element_blank())
+
+p_ms1PrecSignal_vs_purity_bar <- plot_grid(p_main, p_sub, nrow = 2, rel_heights = c(0.9, 0.1), align = "v", axis = "lr")
+
+```
+
+### Figure S5
+
+```{r fig_S5, fig.width=10, fig.height=10}
+
+#correlation of IQ ms1PrecSignal vs FP purity
+plot_grid(p_ms1PrecSignal_vs_purity_bar, p_ratio_cor_ms1PrecSIgnal, p_ms1PrecSignal_vs_purity_cor, labels = "AUTO", ncol = 1)
+ggsave2("figures/fig_S5.pdf", width = 10, height = 10)
+
+```
+
