@@ -1,0 +1,355 @@
+---
+title: "Figure 5"
+output: html_notebook
+---
+
+# Import libraries
+```{r}
+library(tidyverse)
+library(magrittr)
+library(cowplot)
+library(ggthemes)
+library(eulerr)
+library(dtplyr)
+source("src/processPisaData.R")
+source("src/pisaStatistics.R")
+source("src/purrFunctions.R")
+```
+
+
+
+
+# Step 1: import raw data and kinase annotations
+```{r}
+# raw data
+rd <- 
+  bind_rows(read.csv("data/raw/2022-03-01.tmt_ms2.csv") %>% 
+              filter(!grepl("DECOY", Reference)) %>%  
+              rename_at(.vars = vars(ends_with("_.c3032.")),
+                        .funs = funs(gsub("\\_\\.c3032\\.", "", .))) %>% 
+              mutate(quantification = "MS2") %>% 
+              select(-spsMz), # does not exist in MS2 data
+            
+            read.csv("data/raw/2022-03-01.tmt_ms3.csv") %>% 
+              filter(!grepl("DECOY", Reference)) %>% 
+              rename_at(.vars = vars(ends_with("_.c3031.")),
+                        .funs = funs(gsub("\\_\\.c3031\\.", "", .))) %>% 
+              mutate(quantification = "MS3 (RTS)") %>% 
+              select(-spsMz))
+
+# human kinases
+human_kinases <- read.csv("data/external/human_kinases.csv")
+
+# gene names
+gene_names <- read.csv("data/external/human_proteome_gene_names.csv")
+```
+
+# Step 2: consolidate to protein-level quantification
+```{r}
+processedData <- processPisaData(data = rd,
+                                 filterMetric = "pepTopXIntFromTotal",
+                                 filterCutoffMethod = "percentile",
+                                 filterCutoffValue = NA,
+                                 filterPercentile = 0.25)
+```
+
+
+# Step 3: statistical test
+-Note: removed filtered MS3 (RTS) [standard RTS as benchmark for MS2]
+```{r}
+testResults <- pisaStatistics(data = processedData %>% 
+                                filter(!(and(filter == "pepTopXIntFromTotal",
+                                             quantification == "MS3 (RTS)"))), # remove
+                              proteinsToUse = "all",
+                              minPeptides = 2,
+                              minPSMs = 2,
+                              fcCutoff = log2(1))
+```
+
+
+
+# Figure 5
+## (A) Number of peptides/proteins
+```{r}
+summary_df <- 
+  testResults %>% 
+  ungroup %>% 
+  group_by(quantification, filter) %>% 
+  summarise(n = n_distinct(reference))
+
+fig5a <-
+  summary_df %>% 
+  mutate(quantification = case_when(quantification == "MS2" & filter != "none" ~ "MS2\n(Filtered)",
+                                    grepl("MS3", quantification) ~ "MS3\n(RTS)",
+                                    TRUE ~ "MS2\n(All)")) %>% 
+  
+  ggplot(aes(x = quantification, y = n, fill = quantification)) +
+  geom_bar(color = "black", stat = "identity", position = position_dodge(width = 0.95)) +
+  geom_text(aes(y = n + 300, label = n), position = position_dodge(width = 0.93), size = 3) +
+  xlab(NULL) +
+  ylab("Protein Count") +
+  guides(fill = "none", alpha = "none") +
+  labs(lty = NULL) +
+  ylim(0, 6000) +
+  scale_alpha_manual(values = c(0.85, 0.5)) +
+  scale_fill_viridis_d(begin = 0.2, end = 0.8) +
+  theme_few(base_size = 10, base_family = "ArialMT") +
+  theme(legend.position = c(0.75, 0.9),
+        legend.key = element_rect(fill = NA),
+        legend.background = element_blank())
+
+fig5a
+```
+
+
+## (B) Significant hits
+```{r}
+testSummary <- 
+  testResults %>%
+  mutate(quantification = case_when(quantification == "MS2" & filter != "none" ~ "MS2 (Filtered)",
+                                    grepl("MS3", quantification) ~ "MS3 (RTS)",
+                                    TRUE ~ "MS2 (All)")) %>% 
+  group_by(quantification, concentration, kinase) %>% 
+  summarise(total = n(),
+            sig = sum(padj <= 0.05)) %>% 
+  mutate(concentration = ifelse(concentration == "01", "1", "20")) %>% 
+  ungroup %>% 
+  group_by(quantification, concentration) %>% 
+  mutate(total_sig = sum(sig),
+         total_total = sum(total),
+         total_perc_n = round((total_sig/total_total)*100, 2))
+  
+fig5b <- 
+  testSummary %>% 
+  
+  ggplot(aes(x = concentration, y = sig, fill = quantification, alpha = kinase)) +
+  geom_bar(stat = "identity", color = "black") +
+  geom_text(aes(y = total_sig + 3.5, label = paste0(total_sig, "\n", "(", total_perc_n, "%)")),
+            position = position_dodge(width = 0.93), alpha = 1, size = 3) +
+  xlab("Staurosporine (µM)") +
+  ylab("Proteins with\nstability change") +
+  guides(fill = "none") +
+  labs(lty = NULL, alpha = NULL) +
+  scale_y_continuous(limits = c(0, 28), breaks = seq(0, 25, 5)) +
+  scale_alpha_manual(values = c(0.85, 0.5)) +
+  scale_fill_viridis_d(begin = 0.2, end = 0.8) +
+  theme_few(base_size = 10, base_family = "ArialMT") +
+  theme(legend.position = c(0.1, 0.9),
+        legend.key = element_rect(fill = NA),
+        legend.background = element_blank()) +
+  facet_grid(~ paste0(quantification))
+
+fig5b
+```
+
+
+
+## (C) Euler plot
+```{r}
+proteinTestSummary <- 
+  testResults %>%
+  filter(impact != "n.s.") %>% 
+  mutate(quantification = case_when(quantification == "MS2" & filter != "none" ~ "B",
+                                    quantification == "MS2" ~ "A", 
+                                    TRUE ~ "C")) %>% 
+  group_by(reference, quantification) %>% 
+  mutate(impact = ifelse(sum(padj <= 0.05) >= 1, 1, 0)) %>% 
+  select(-pval, -padj, -delta, -sumSD, -concentration, -filter) %>% 
+  distinct() %>% 
+  pivot_wider(names_from = c(quantification), 
+              values_from = impact,
+              values_fill = 0) %>% 
+  ungroup %>% 
+  group_by(A, B, C) %>% 
+  count
+  
+fit <- euler(c("MS2&MS2\n(Filtered)&MS3 (RTS)" = 8, 
+               "MS2&MS2\n(Filtered)" = 9,
+               "MS2&MS3 (RTS)" = 0, 
+               "MS2\n(Filtered)&MS3 (RTS)" = 3, 
+               "MS2" = 1,
+               "MS2\n(Filtered)" = 4,
+               "MS3 (RTS)" = 8))
+
+
+# Add quantities to the plot
+fig5c <- 
+  plot(fit,
+       fills = list(fill = c("#333366", "#339999", "#66CC33"), alpha = 0.5),
+       labels = list(col = "black", font = 4, cex = 0.75),
+       quantities = list(cex = 0.75))
+
+fig5c
+```
+
+
+
+## (D) Changes in accuracy and precision
+```{r}
+sigHitsOverlap <- 
+  testResults %>% 
+  filter(impact != "n.s.") %>% 
+  filter(grepl("MS2", quantification)) %>% 
+  group_by(reference, concentration) %>% 
+  mutate(gainLossSame = case_when(n_distinct(filter) == 2 ~ "none",
+                                  n_distinct(filter) == 1 & filter == "none" ~ "loss",
+                                  n_distinct(filter) == 1 & filter == "pepTopXIntFromTotal" ~ "gain")) %>% 
+  distinct(reference, quantification, concentration, gainLossSame)
+
+
+
+fig5d <- 
+  testResults %>% 
+  inner_join(y = sigHitsOverlap) %>% 
+  ungroup %>% 
+  select(reference, filter, kinase, concentration, delta, sumSD, gainLossSame) %>% 
+  pivot_wider(names_from = c(filter), values_from = c(delta, sumSD)) %>%  
+  # mutate(delta_delta = delta_pepTopXIntFromTotal - delta_none,
+         # delta_sd = sumSD_pepTopXIntFromTotal - sumSD_none) %>% 
+  mutate(delta_delta = abs(delta_pepTopXIntFromTotal) - abs(delta_none),
+         delta_sd = sumSD_pepTopXIntFromTotal - sumSD_none) %>%
+  left_join(gene_names) %>% 
+  mutate(concentration = ifelse(concentration == "01", "1 µM", "20 µM")) %>% 
+  
+  ggplot(aes(x = abs(delta_delta), y = delta_sd, color = gainLossSame, fill = gainLossSame)) +
+  geom_hline(yintercept = 0, color = "grey40") +
+  geom_vline(xintercept = 0, color = "grey40") +
+  ggrepel::geom_text_repel(data = . %>%
+                             filter(delta_delta != 0) %>% 
+                             group_by(reference) %>% 
+                             filter(sum(gainLossSame != "none") >= 1), 
+                           aes(label = gene_name),
+                           color = "black", size = 3, 
+                           box.padding = 0.5, min.segment.length = 0) +
+  geom_point(aes(pch = kinase), size = 2) +
+  geom_point(aes(pch = kinase), color = "black", alpha = 1, size = 2) +
+  # geom_point(data = . %>% filter(kinase == "kinase"),
+  #            aes(pch = kinase),
+  #            color = "black", alpha = 1, size = 2) +
+  scale_color_viridis_d(begin = 0.2, end = 0.8) +
+  scale_fill_viridis_d(begin = 0.2, end = 0.8) +
+  scale_shape_manual(values = c(21, 23)) +
+  xlim(0, 0.15) +
+  ylim(-0.1, 0.1) +
+  xlab("Abs(Log"[2]~"FC [Filtered]) - Abs(Log"[2]~"FC [All])") +
+  ylab(Delta~"Sum S.D. (Filtered - All)") +
+  labs(color = "Filtering Effect",
+       pch = "Protein") +
+  guides(fill = "none") +
+  guides(col = guide_legend(order = 1),
+         pch = guide_legend(order = 2)) +
+  theme_bw(base_size = 10, base_family = "ArialMT") +
+  theme(legend.position = c(0.3, 0.85),
+        legend.background = element_rect(color = "black", size = 0.25),
+        strip.background = element_blank(),
+        panel.spacing = unit(0.75, "lines"),
+        legend.box = "horizontal") +
+  facet_wrap(~ concentration)
+
+fig5d
+
+```
+
+
+
+
+
+## (E) Example proteins
+```{r}
+fig5e <-
+  processedData %>% 
+  ungroup %>% 
+  filter(reference %in% c("Q13557", "Q13131")) %>% 
+  filter(!(and(filter == "pepTopXIntFromTotal",
+               quantification == "RTS-MS3"))) %>% 
+  mutate(quantification = case_when(quantification == "MS2" & filter != "none" ~ "MS2 (Filtered)",
+                                    quantification == "MS3 (RTS)" ~ "MS3 (RTS)",
+                                    TRUE ~ "MS2 (All)")) %>%
+  # mutate(quantification = case_when(quantification == "MS2" & filter != "none" ~ "MS2\n(Filtered)",
+  #                                   quantification == "MS3 (RTS)" ~ "MS3\n(RTS)", 
+  #                                   TRUE ~ as.character(quantification))) %>% 
+  gather(concentration, int, c(`00um`:`20um`)) %>% 
+  # gather(concentration, int, c(delta0100:delta2000)) %>% 
+  group_by(reference, quantification, filter) %>% 
+  mutate(int = int - median(int[concentration == "00um"])) %>% 
+  mutate(filter = ifelse(filter == "none", "All Scans", "Filtered Scans")) %>% 
+  left_join(fasta_db) %>% 
+  separate(gene_name, c("gene_name"), sep = "_") %>% 
+  mutate(concentration = case_when(concentration == "00um" ~ "0",
+                                   concentration == "01um" ~ "1",
+                                   TRUE ~ "20")) %>% 
+  
+  ggplot(aes(x = concentration, y = int, fill = quantification)) +
+  geom_hline(yintercept = 0, lty = "dashed", size = 0.25) +
+  geom_boxplot() +
+  scale_fill_viridis_d(begin = 0.2, end = 0.8) +
+  scale_color_viridis_d(begin = 0.2, end = 0.8) +
+  scale_alpha_manual(values = c(1, 0.35)) +
+  ylim(-0.25, 0.75) +
+  xlab("Staurosporine (µM)") +
+  ylab("Log"[2]~"FC (Staur./Contr.)") +
+  labs(fill = NULL) +
+  # ggtitle(label = "CAMK2D") +
+  theme_few(base_size = 10, base_family = "ArialMT") +
+  theme(legend.position = c(0.275, 0.925),
+        legend.background = element_blank()) +
+  # theme(legend.position = "top") +
+  facet_grid(factor(gene_name, levels = c("KCC2D", "AAPK1")) ~ .)
+
+fig5e
+``` 
+
+
+
+## Merge all plots
+
+```{r}
+addSmallLegend <- function(myPlot, pointSize = 0.5, textSize = 3, spaceLegend = 0.1) {
+    myPlot +
+        guides(shape = guide_legend(override.aes = list(size = pointSize)),
+               color = guide_legend(override.aes = list(size = pointSize))) +
+        theme(legend.title = element_text(size = textSize), 
+              legend.text  = element_text(size = textSize),
+              legend.key.size = unit(spaceLegend, "lines"))
+}
+
+fig5b2 <- addSmallLegend(fig5b, pointSize = 2, textSize = 7, spaceLegend = 0.5)
+fig5d2 <- addSmallLegend(fig5d, pointSize = 2, textSize = 7, spaceLegend = 0.5)
+fig5e2 <- addSmallLegend(fig5e, pointSize = 2, textSize = 7, spaceLegend = 0.5)
+
+fig5e2
+
+top_row <- plot_grid(fig5a, NULL, fig5b2, NULL, fig5c,
+                     rel_widths = c(1.1, 0.05, 2, 0.05, 1),
+                     labels = c("A", "", "B", "", "C"),
+                     nrow = 1, align = "h", axis = "tb")
+
+bottom_row <- plot_grid(fig5d2, NULL, fig5e2, 
+                        rel_widths = c(2, 0.05, 1),
+                        labels = c("D", "", "E"),
+                        nrow = 1, align = "h", axis = "tb")
+
+
+plot <- 
+  plot_grid(top_row, NULL, bottom_row,
+            rel_heights = c(1, 0.1, 1.3),
+            nrow = 3)
+
+# plot
+
+ggsave(plot = plot,
+       filename = "figure5.png",
+       width = 7.5, height = 5.5)
+
+ggsave(plot = plot,
+       filename = "figure5.pdf",
+       width = 7.5, height = 5.5, device = cairo_pdf)
+```
+
+
+
+
+```{r}
+sessionInfo()
+```
+

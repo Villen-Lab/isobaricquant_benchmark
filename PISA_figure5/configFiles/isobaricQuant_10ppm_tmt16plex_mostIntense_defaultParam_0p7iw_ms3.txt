@@ -1,0 +1,19 @@
+method,TMTpro
+search.method,most_intense
+ms1DepthSearch,5
+scanLevel,MS3
+neutralLosses, 
+mass,HCD fragmentation
+search.fragment.file,false
+precSignalWindow,0.35
+search.ppm2,1000
+ms2.precursor.window,2.5
+recalculate_intensities,false
+search.ppm1,10
+labels,all
+score,REPORTERS_INTENSITY
+search.ppm,10
+hit.impurity,master_scan
+topX,10
+neutralLossesFI, 
+dataSheet,TMT10plex_QI218066
