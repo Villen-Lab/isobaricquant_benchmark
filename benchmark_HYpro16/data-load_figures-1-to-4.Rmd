@@ -136,16 +136,12 @@ file_list <- c("a18182_MS2_1", "a18183_SPS_1", "a18184_RTS_1",
 
 data <- foreach(file = file_list, .combine = rbind) %do% {
   
-  #prepare data, by filtering Comet hits with Percolator output
-  data <- fread(paste0("data/", file, ".txt"), skip = 1)
-  data <- data[!like(protein, "^DECOY_")]
-  perc <- fread(paste0("data/", file, ".mokapot.psms.txt"))
+  #load Percolator output
+  data <- fread(paste0("data/", file, ".mokapot.psms.txt"))
   
   #create tag and merge two datasets
   data[, raw := (file)]
-  data[, tag := paste0(file, "_", scan, "_", charge, "_", num)]
-  data <- merge(x=data, y=perc, by.x="tag", by.y="SpecId", all.x=T, all.y=F)
-  setkey(data, scan)
+  setkey(data, ScanNr)
   
   #filter comet output based on q-value
   data <- data[`mokapot q-value`<=0.01]
@@ -217,16 +213,16 @@ data_CO[, protein_split := sapply(Proteins, function(x) strsplit(x, "\t", fixed=
 data_CO[, proteins := lapply(protein_split, function(x) gsub("^[^\\|]*\\|([^\\|]*)\\|[^\\|]*$", "\\1", x) )]
 data_CO[, organism := sapply(protein_split, function(x) dcast_unique_sort(gsub("^[^\\|]*\\|[^\\|]*\\|[^\\|]*_(.*)$", "\\1", x)) )]
 data_CO[, protein := sapply(proteins, function(x) x[1] )]
-data_CO[, peptide_mod := peptide_gsub(gsub("^..(.*)..$", "\\1", modified_peptide), "CO")]
+data_CO[, charge := as.integer(gsub("^.*_.*_.*_.*_(.*)_.*$", "\\1", SpecId))]
+data_CO[, peptide_mod := peptide_gsub(gsub("^..(.*)..$", "\\1", Peptide), "CO")]
 data_CO[, peptide_seq := gsub("(\\(..\\))", "", peptide_mod)]
 data_CO[, peptide_z := paste0(peptide_mod, "_", charge)]
-data_CO[, charge := charge]
-data_CO[, mz_ratio := (exp_neutral_mass+charge*1.0073)/charge]
+data_CO[, mz_ratio := (ExpMass+charge*1.0073)/charge]
 data_CO[, intensity := maxIntensity]
 data_CO[, intensity_MS1 := numeric()]
-data_CO[, score := xcorr]
+data_CO[, score := `mokapot score`]
 data_CO[, qscore := numeric()]
-data_CO[, scan_ms2 := scan]
+data_CO[, scan_ms2 := ScanNr]
 data_CO[, scan_ms3 := firstScan]
 data_CO <- data_CO[, .(sample, condition, cond_met, cond_dil, replicate, rep_met, raw_file, reverse,
                  gene, protein, proteins, organism, peptide_mod, peptide_seq, peptide_z,
@@ -282,15 +278,15 @@ data_COw[, protein_split := sapply(Proteins, function(x) strsplit(x, "\t", fixed
 data_COw[, proteins := lapply(protein_split, function(x) gsub("^[^\\|]*\\|([^\\|]*)\\|[^\\|]*$", "\\1", x) )]
 data_COw[, organism := sapply(protein_split, function(x) dcast_unique_sort(gsub("^[^\\|]*\\|[^\\|]*\\|[^\\|]*_(.*)$", "\\1", x)) )]
 data_COw[, protein := sapply(proteins, function(x) x[1] )]
-data_COw[, peptide_mod := peptide_gsub(gsub("^..(.*)..$", "\\1", modified_peptide), "CO")]
+data_COw[, charge := as.integer(gsub("^.*_.*_.*_.*_(.*)_.*$", "\\1", SpecId))]
+data_COw[, peptide_mod := peptide_gsub(gsub("^..(.*)..$", "\\1", Peptide), "CO")]
 data_COw[, peptide_seq := gsub("(\\(..\\))", "", peptide_mod)]
 data_COw[, peptide_z := paste0(peptide_mod, "_", charge)]
-data_COw[, charge := charge]
-data_COw[, mz_ratio := (exp_neutral_mass+charge*1.0073)/charge]
+data_COw[, mz_ratio := (ExpMass+charge*1.0073)/charge]
 data_COw[, intensity_MS1 := numeric()]
-data_COw[, score := xcorr]
+data_COw[, score := `mokapot score`]
 data_COw[, qscore := numeric()]
-data_COw[, scan_ms2 := scan]
+data_COw[, scan_ms2 := ScanNr]
 data_COw[, scan_ms3 := firstScan]
 data_COw <- data_COw[, .SD, .SDcols = c("raw", "peptideID", "sample", "condition", "replicate", "raw_file", "reverse",
                                         "gene", "protein", "proteins", "organism", "peptide_mod", "peptide_seq", "peptide_z",
@@ -536,13 +532,13 @@ p_scores_scaled_RTS <- ggplot(QC_data[type=="ratio 1:20" & condition=="RTS-MS3"]
 
 ```
 
-### Figure S4
+### Figure S5
 
-```{r fig_S4, fig.width=20, fig.height=20}
+```{r fig_S5, fig.width=20, fig.height=20}
 
 #score distributions, raw and scaled
 plot_grid(p_scores_SPS, p_scores_RTS, p_scores_MS2, labels = "AUTO", ncol = 2, rel_heights = c(4,3))
-ggsave2("figures/fig_S4.pdf", width = 20, height = 12.5)
+ggsave2("figures/fig_S5.pdf", width = 20, height = 12.5)
 
 ```
 
@@ -938,15 +934,15 @@ ggsave2("figures/fig_4.pdf", width = 15, height = 15)
 
 ```
 
-### Figure S6
+### Figure S7
 
-```{r fig_S6, fig.width=15, fig.height=10}
+```{r fig_S7, fig.width=15, fig.height=10}
 
 #protein-level accuracy and randomized score control
 plot_grid(p_min2_ratio_msnTotalSignal, p_min2_ratio_peptideIntensityScore, p_min2_ratio_peptideTopXIntensityFromTotalScore,
                         p_min2_ratio_random_score, p_min2_CV_random_score,
                         labels = LETTERS[1:5], ncol = 3)
-ggsave2("figures/fig_S6.pdf", width = 15, height = 10)
+ggsave2("figures/fig_S7.pdf", width = 15, height = 10)
 
 ```
 
@@ -1235,14 +1231,14 @@ p_frc_full_quant_yeast <- ggplot(count_nr_TMTy, aes(x=cond_met, y=quant_rel, fil
 
 ```
 
-### Figure S1
+### Figure S2
 
-```{r fig_S1, fig.width=15, fig.height=10}
+```{r fig_S2, fig.width=15, fig.height=10}
 
 #number of quantified scan groups with full 16plex
 #number of quantified yeast channels
 plot_grid(p_frc_full_quant, p_frc_channel_quant, labels = "AUTO", ncol = 1, align = "v", axis = "lr")
-ggsave2("figures/fig_S1.pdf", width = 15, height = 10)
+ggsave2("figures/fig_S2.pdf", width = 15, height = 10)
 
 ```
 
@@ -1369,16 +1365,16 @@ p_quant_match_rep <- ggplot(rbind(count_IQFP_rep, count_IQMQ_rep), aes(x=cond_di
 
 ```
 
-### Figure S2
+### Figure S3
 
-```{r fig_S2, fig.width=15, fig.height=15}
+```{r fig_S3, fig.width=15, fig.height=15}
 
 #all fractions of quants with full 16plex quantification
 #all quant correlations FP & MS2 quant correlations MQ
 #share of matching quants
 plot_grid(p_IQ_FP_correlation_cond, p_IQ_MQ_correlation_cond, p_quant_match_rep,
           ncol = 1, labels = "AUTO", rel_heights = c(3,1,1), align = "v", axis = "lr")
-ggsave2("figures/fig_S2.pdf", width = 15, height = 15)
+ggsave2("figures/fig_S3.pdf", width = 15, height = 15)
 
 ```
 
@@ -1427,13 +1423,13 @@ p_ms1PrecSignal_vs_purity_bar <- plot_grid(p_main, p_sub, nrow = 2, rel_heights 
 
 ```
 
-### Figure S5
+### Figure S6
 
-```{r fig_S5, fig.width=10, fig.height=10}
+```{r fig_S6, fig.width=10, fig.height=10}
 
 #correlation of IQ ms1PrecSignal vs FP purity
 plot_grid(p_ms1PrecSignal_vs_purity_bar, p_ratio_cor_ms1PrecSIgnal, p_ms1PrecSignal_vs_purity_cor, labels = "AUTO", ncol = 1)
-ggsave2("figures/fig_S5.pdf", width = 10, height = 10)
+ggsave2("figures/fig_S6.pdf", width = 10, height = 10)
 
 ```
 
