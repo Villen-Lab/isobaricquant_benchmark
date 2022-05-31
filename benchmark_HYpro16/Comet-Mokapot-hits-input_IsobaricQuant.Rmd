@@ -97,19 +97,11 @@ file_list <- c("a18182_MS2_1", "a18183_SPS_1", "a18184_RTS_1",
                "a18185_MS2_2", "a18186_SPS_2", "a18187_RTS_2",
                "a18188_MS2_3", "a18189_SPS_3", "a18190_RTS_3")
 
-file <- file_list[1]
-
 foreach(file = file_list) %do% {
   
   #prepare data, by filtering Comet hits with Percolator output
-  data <- fread(paste0("data/", file, ".txt"), skip = 1)
-  data <- data[!like(protein, "^DECOY_")]
-  perc <- fread(paste0("data/", file, ".mokapot.psms.txt"))
-  
-  #create tag and merge two datasets
-  data[, tag := paste0(file, "_", scan, "_", charge, "_", num)]
-  data <- merge(x=data, y=perc, by.x="tag", by.y="SpecId", all.x=T, all.y=F)
-  setkey(data, scan)
+  data <- fread(paste0("data/", file, ".mokapot.psms.txt"))
+  setkey(data, ScanNr)
   
   #filter comet output based on q-value
   data <- data[`mokapot q-value`<=0.01]
@@ -118,9 +110,11 @@ foreach(file = file_list) %do% {
   #create row number column
   data[, PeptideID := 1:.N]
   #export IsobaricQuant hits input file
-  data_exp <- data[, .(SearchID = 1, PeptideID, peptide_gsub_Comet_old(modified_peptide),
-                       reference = gsub("^([^\\,]*).*$", "\\1", protein, perl=T), charge, ScanNumber = scan,
-                       mz = (exp_neutral_mass+charge*1.0073)/charge)]
+  data_exp <- data[, .(SearchID = 1, PeptideID, ModifiedPeptideSeq = peptide_gsub_Comet_old(Peptide),
+                       Reference = gsub("^([^\\\t]*).*$", "\\1", Proteins, perl=T),
+                       Charge = as.integer(gsub("^.*_.*_.*_.*_(.*)_.*$", "\\1", SpecId)), ScanNumber = ScanNr, ExpMass)]
+  data_exp[, mz := (ExpMass+charge*1.0073-1.0073)/charge]
+  data_exp[, ExpMass := NULL]
   fwrite(data_exp, file = paste0(path, "/export/", file, "_hits_oldComet.csv"), col.names = F)
   
   return(NULL)
